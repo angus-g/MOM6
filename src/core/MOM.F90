@@ -88,6 +88,7 @@ use MOM_dynamics_legacy_split, only : step_MOM_dyn_legacy_split, register_restar
 use MOM_dynamics_legacy_split, only : initialize_dyn_legacy_split, end_dyn_legacy_split
 use MOM_dynamics_legacy_split, only : adjustments_dyn_legacy_split, MOM_dyn_legacy_split_CS
 use MOM_dyn_horgrid,           only : dyn_horgrid_type, create_dyn_horgrid, destroy_dyn_horgrid
+use MOM_energy,                only : calculate_RPE_init, calculate_RPE, rpe_CS
 use MOM_EOS,                   only : EOS_init
 use MOM_EOS,                   only : gsw_sp_from_sr, gsw_pt_from_ct
 use MOM_EOS,                   only : calculate_density
@@ -366,6 +367,11 @@ type, public :: MOM_control_struct
   integer :: id_S_preale = -1
   integer :: id_e_preale = -1
 
+  ! diagnostics for reference potential energy
+  integer :: id_RPE_preale  = -1
+  integer :: id_RPE_postale = -1
+  integer :: id_RPE_alediff = -1
+
   ! Diagnostics for tracer horizontal transport
   integer :: id_uhtr = -1, id_umo = -1, id_umo_2d = 1
   integer :: id_vhtr = -1, id_vmo = -1, id_vmo_2d = 1
@@ -394,7 +400,8 @@ type, public :: MOM_control_struct
   type(sponge_CS),               pointer :: sponge_CSp             => NULL()
   type(ALE_sponge_CS),           pointer :: ALE_sponge_CSp         => NULL()
   type(ALE_CS),                  pointer :: ALE_CSp                => NULL()
-  type(offline_transport_CS),    pointer :: offline_CSp             => NULL()
+  type(offline_transport_CS),    pointer :: offline_CSp            => NULL()
+  type(rpe_CS),                  pointer :: rpe_CSp                => NULL()
 
   ! These are used for group halo updates.
   type(group_pass_type) :: pass_tau_ustar_psurf
@@ -507,7 +514,7 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
   real, dimension(SZI_(CS%G),SZJ_(CS%G),SZK_(CS%G)) :: h_pre_dyn
 
   real :: tot_wt_ssh, Itot_wt_ssh, I_time_int
-  real :: zos_area_mean, volo, ssh_ga
+  real :: zos_area_mean, volo, ssh_ga, rpe_preale, rpe_postale
   type(time_type) :: Time_local
   logical :: showCallTree
   logical :: do_pass_kd_kv_turb ! This is used for a group halo pass.
@@ -742,6 +749,11 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
             call post_data(CS%id_e_preale, eta_preale, CS%diag)
         endif
 
+        if (CS%id_RPE_preale > 0) then
+          call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_preale)
+          call post_data(CS%id_RPE_preale, rpe_preale, CS%diag)
+        endif
+
         ! Regridding/remapping is done here, at end of thermodynamics time step
         ! (that may comprise several dynamical time steps)
         ! The routine 'ALE_main' can be found in 'MOM_ALE.F90'.
@@ -783,6 +795,12 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
           call hchksum(CS%tv%S,"Post-ALE 1 S", G%HI, haloshift=1)
           call check_redundant("Post-ALE 1 ", u, v, G)
         endif
+
+        if (CS%id_RPE_postale > 0) then
+          call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_postale)
+          call post_data(CS%id_RPE_postale, rpe_postale, CS%diag)
+        endif
+        if (CS%id_RPE_alediff > 0) call post_data(CS%id_RPE_alediff, rpe_postale - rpe_preale, CS%diag)
 
         ! Whenever thickness changes let the diag manager know, target grids
         ! for vertical remapping may need to be regenerated.
@@ -1141,6 +1159,11 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
             call post_data(CS%id_e_preale, eta_preale, CS%diag)
         endif
 
+        if (CS%id_RPE_preale > 0) then
+          call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_preale)
+          call post_data(CS%id_RPE_preale, rpe_preale, CS%diag)
+        endif
+
         if ( CS%use_ALE_algorithm ) then
 !         call pass_vector(u, v, G%Domain)
           call do_group_pass(CS%pass_T_S_h, G%Domain)
@@ -1177,6 +1200,12 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
           call hchksum(CS%tv%S,"Post-ALE 1 S", G%HI, haloshift=1)
           call check_redundant("Post-ALE ", u, v, G)
         endif
+
+        if (CS%id_RPE_postale > 0) then
+          call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_postale)
+          call post_data(CS%id_RPE_postale, rpe_postale, CS%diag)
+        endif
+        if (CS%id_RPE_alediff > 0) call post_data(CS%id_RPE_alediff, rpe_postale - rpe_preale, CS%diag)
 
         ! Whenever thickness changes let the diag manager know, target grids
         ! for vertical remapping may need to be regenerated. This needs to
@@ -2463,7 +2492,7 @@ subroutine initialize_MOM(Time, param_file, dirs, CS, Time_in, offline_tracer_mo
     call ALE_register_diags(Time, G, diag, CS%tv%C_p, CS%tracer_Reg, CS%ALE_CSp)
   endif
 
-
+  call calculate_RPE_init(CS%rpe_CSp)
 
   ! If need a diagnostic field, then would have been allocated in register_diags.
   if (CS%use_temperature) then
@@ -2820,6 +2849,14 @@ subroutine register_diags(Time, G, GV, CS, ADp)
   CS%id_vmo_2d = register_diag_field('ocean_model', 'vmo_2d', &
       diag%axesCv1, Time, 'Ocean Mass Y Transport Vertical Sum', 'kg/s', &
       standard_name='ocean_mass_y_transport_vertical_sum', x_cell_method='sum')
+
+  ! RPE diagnostics
+  CS%id_RPE_preale = register_scalar_field('ocean_model', 'RPE_preale', Time, diag, &
+       long_name='Instantaneous RPE before ALE', units='W/m2')
+  CS%id_RPE_postale = register_scalar_field('ocean_model', 'RPE_postale', Time, diag, &
+       long_name='Instantaneous RPE after ALE', units='W/m2')
+  CS%id_RPE_alediff = register_scalar_field('ocean_model', 'RPE_alediff', Time, diag, &
+       long_name='Instantaneous RPE difference across ALE', units='W/m2')
 
 end subroutine register_diags
 
