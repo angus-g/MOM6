@@ -368,6 +368,9 @@ type, public :: MOM_control_struct
   integer :: id_e_preale = -1
 
   ! diagnostics for reference potential energy
+  integer :: id_RPE_predyn  = -1
+  integer :: id_RPE_postdyn = -1
+  integer :: id_RPE_dyndiff = -1
   integer :: id_RPE_preale  = -1
   integer :: id_RPE_postale = -1
   integer :: id_RPE_alediff = -1
@@ -514,7 +517,8 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
   real, dimension(SZI_(CS%G),SZJ_(CS%G),SZK_(CS%G)) :: h_pre_dyn
 
   real :: tot_wt_ssh, Itot_wt_ssh, I_time_int
-  real :: zos_area_mean, volo, ssh_ga, rpe_preale, rpe_postale
+  real :: zos_area_mean, volo, ssh_ga
+  real :: rpe_predyn, rpe_postdyn, rpe_preale, rpe_postale
   type(time_type) :: Time_local
   logical :: showCallTree
   logical :: do_pass_kd_kv_turb ! This is used for a group halo pass.
@@ -858,8 +862,14 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
 
     call cpu_clock_end(id_clock_other)
 
-
     call cpu_clock_begin(id_clock_dynamics)
+
+    call enable_averaging(dt, Time_local, CS%diag)
+    if (CS%id_RPE_predyn > 0) then
+        call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_predyn)
+        call post_data(CS%id_RPE_predyn, rpe_predyn, CS%diag)
+    endif
+
     call disable_averaging(CS%diag)
 
     if (CS%thickness_diffuse .and. CS%thickness_diffuse_first) then
@@ -1162,6 +1172,10 @@ subroutine step_MOM(fluxes, state, Time_start, time_interval, CS)
         if (CS%id_RPE_preale > 0) then
           call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_preale)
           call post_data(CS%id_RPE_preale, rpe_preale, CS%diag)
+
+          ! dynamics difference without explicit postdyn diag
+          if (CS%id_RPE_dyndiff > 0 .and. CS%id_RPE_postdyn == -1) &
+               call post_data(CS%id_RPE_dyndiff, rpe_preale - rpe_predyn, CS%diag)
         endif
 
         if ( CS%use_ALE_algorithm ) then
@@ -2851,6 +2865,12 @@ subroutine register_diags(Time, G, GV, CS, ADp)
       standard_name='ocean_mass_y_transport_vertical_sum', x_cell_method='sum')
 
   ! RPE diagnostics
+  CS%id_RPE_predyn = register_scalar_field('ocean_model', 'RPE_predyn', Time, diag, &
+       long_name='Instantaneous RPE before dynamics', units='W/m2')
+  CS%id_RPE_postdyn = register_scalar_field('ocean_model', 'RPE_postdyn', Time, diag, &
+       long_name='Instantaneous RPE after dynamics', units='W/m2')
+  CS%id_RPE_dyndiff = register_scalar_field('ocean_model', 'RPE_dyndiff', Time, diag, &
+       long_name='Instantaneous RPE difference across dynamics', units='W/m2')
   CS%id_RPE_preale = register_scalar_field('ocean_model', 'RPE_preale', Time, diag, &
        long_name='Instantaneous RPE before ALE', units='W/m2')
   CS%id_RPE_postale = register_scalar_field('ocean_model', 'RPE_postale', Time, diag, &
