@@ -211,7 +211,7 @@ contains
 
     ! Choose np-1 pivots
     do i = 1, np - 1
-      pivots(i) = cells(i * (np - 1))
+      pivots(i) = cells(i * n / np)
     enddo
 
     ! Gather pivots on root
