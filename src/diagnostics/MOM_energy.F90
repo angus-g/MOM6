@@ -105,9 +105,9 @@ contains
 
   subroutine merge(n, size, A, counts, B)
     integer, intent(in) :: n, size
-    type(rpe_elem), dimension(size), intent(in) :: A
-    type(rpe_elem), dimension(size), intent(inout) :: B
-    integer, dimension(n), intent(in) :: counts
+    type(rpe_elem), intent(in) :: A(size)
+    type(rpe_elem), intent(inout) :: B(size)
+    integer, intent(in) :: counts(n)
 
     ! pointer into each bucket
     integer, dimension(n) :: pos, max_pos
@@ -197,7 +197,7 @@ contains
     cells(1:n) => cells_full ! flattened version of cells
 
     ! Calculate density columnwise and populate cells
-    do i = G%isc,G%iec ; do j = G%jsc,G%jec
+    do j = G%jsc,G%jec ; do i = G%isc,G%iec
       call calculate_density(tv%T(i,j,:), tv%S(i,j,:), p_ref, density(i,j,:), 1, nk, tv%eqn_of_state)
 
       do k = 1, nk
@@ -285,8 +285,8 @@ contains
     enddo
     local_RPE = local_RPE * G%g_Earth / G%areaT_global
 
-    ! Reduce RPE to a total global sum
-    call mpi_reduce(local_RPE, RPE, 1, MPI_DOUBLE_PRECISION, MPI_SUM, root_PE(), MPI_COMM_WORLD, ierr)
+    ! Reduce RPE to a total global sum on all PEs
+    call mpi_allreduce(local_RPE, RPE, 1, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
 
     deallocate(interfaces)
     deallocate(bucket)
