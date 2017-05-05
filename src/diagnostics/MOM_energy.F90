@@ -171,8 +171,8 @@ contains
     ! Local variables
     type(rpe_elem), target :: cells_full(G%isc:G%iec,G%jsc:G%jec,G%ke) ! RPE elements only in computational domain
     type(rpe_elem), pointer :: cells(:)
-    type(rpe_elem) :: pivots(CS%np) ! pivot elements for bucket sort
-    type(rpe_elem), allocatable :: all_pivots(:), bucket(:), bucket_sorted(:)
+    type(rpe_elem) :: pivots(CS%np), all_pivots(CS%np*CS%np) ! pivot elements for bucket sort
+    type(rpe_elem), allocatable :: bucket(:), bucket_sorted(:)
 
     integer :: counts(CS%np), recv_counts(CS%np) ! local element counts for each bucket
     integer :: displs(CS%np), rdispls(CS%np) ! displacements into bucket to receive
@@ -190,8 +190,6 @@ contains
     n = size(cells_full)
     nk = GV%ke
     np = CS%np
-
-    if (is_root_pe()) allocate(all_pivots(np*(np-1)))
 
     p_ref(:) = tv%P_Ref ! use same reference pressure for all cells
     cells(1:n) => cells_full ! flattened version of cells
@@ -291,6 +289,5 @@ contains
     deallocate(interfaces)
     deallocate(bucket)
     deallocate(bucket_sorted)
-    if (allocated(all_pivots)) deallocate(all_pivots)
   end subroutine calculate_RPE
 end module MOM_energy
