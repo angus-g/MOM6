@@ -20,7 +20,7 @@ contains
 subroutine find_obsolete_params(param_file)
   type(param_file_type), intent(in) :: param_file !< Structure containing parameter file data.
   ! Local variables
-  character(len=40)  :: mod = "find_obsolete_params" ! This module's name.
+  character(len=40)  :: mdl = "find_obsolete_params" ! This module's name.
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
   integer :: test_int
@@ -60,6 +60,12 @@ subroutine find_obsolete_params(param_file)
        hint="Instead use OBC_NUMBER_SEGMENTS>0 and use the new segments protocol.")
   call obsolete_char(param_file, "OBC_CONFIG", &
        hint="Instead use OBC_USER_CONFIG and use the new segments protocol.")
+  call obsolete_char(param_file, "READ_OBC_ETA", &
+       hint="Instead use OBC_SEGMENT_XXX_DATA.")
+  call obsolete_char(param_file, "READ_OBC_UV", &
+       hint="Instead use OBC_SEGMENT_XXX_DATA.")
+  call obsolete_char(param_file, "READ_OBC_TS", &
+       hint="Instead use OBC_SEGMENT_XXX_DATA.")
 
   test_logic3 = .true. ; call read_param(param_file,"ENABLE_THERMODYNAMICS",test_logic3)
   test_logic = .true. ; call read_param(param_file,"TEMPERATURE",test_logic)
@@ -171,20 +177,19 @@ subroutine find_obsolete_params(param_file)
     "find_obsolete_params: #define DYNAMIC_SURFACE_PRESSURE is not yet "//&
     "implemented without #define SPLIT.")
 
-  call read_param(param_file,"USE_LEGACY_SPLIT",test_logic)
-  if (.not.(split .and. test_logic)) then
-    call obsolete_logical(param_file, "FLUX_BT_COUPLING", .false.)
-    call obsolete_logical(param_file, "READJUST_BT_TRANS", .false.)
-    call obsolete_logical(param_file, "RESCALE_BE_FACE_AREAS", .false.)
-    call obsolete_logical(param_file, "APPLY_BT_DRAG", .true.)
-  endif
+  call obsolete_logical(param_file, "USE_LEGACY_SPLIT", .false.)
+
+  call obsolete_logical(param_file, "FLUX_BT_COUPLING", .false.)
+  call obsolete_logical(param_file, "READJUST_BT_TRANS", .false.)
+  call obsolete_logical(param_file, "RESCALE_BT_FACE_AREAS", .false.)
+  call obsolete_logical(param_file, "APPLY_BT_DRAG", .true.)
 
   call obsolete_int(param_file, "SEAMOUNT_LENGTH_SCALE", hint="Use SEAMOUNT_X_LENGTH_SCALE instead.")
 
   call obsolete_logical(param_file, "MSTAR_FIXED", hint="Instead use MSTAR_MODE.")
 
   ! Write the file version number to the model log.
-  call log_version(param_file, mod, version)
+  call log_version(param_file, mdl, version)
 
 end subroutine find_obsolete_params
 

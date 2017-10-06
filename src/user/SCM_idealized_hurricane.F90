@@ -6,7 +6,8 @@ module SCM_idealized_hurricane
 
 use MOM_error_handler, only : MOM_error, FATAL
 use MOM_file_parser, only : get_param, log_version, param_file_type
-use MOM_forcing_type, only : forcing, allocate_forcing_type
+use MOM_forcing_type, only : forcing, mech_forcing
+use MOM_forcing_type, only : allocate_forcing_type, allocate_mech_forcing
 use MOM_grid, only : ocean_grid_type
 use MOM_safe_alloc, only : safe_alloc_ptr
 use MOM_time_manager, only : time_type, operator(+), operator(/), get_time,&
@@ -39,37 +40,46 @@ end type
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
 
-character(len=40)  :: mod = "SCM_idealized_hurricane" ! This module's name.
+character(len=40)  :: mdl = "SCM_idealized_hurricane" ! This module's name.
 
 contains
 
 !> Initializes temperature and salinity for the SCM idealized hurricane example
-subroutine SCM_idealized_hurricane_TS_init(T, S, h, G, GV, param_file)
+subroutine SCM_idealized_hurricane_TS_init(T, S, h, G, GV, param_file, just_read_params)
   type(ocean_grid_type),                     intent(in)  :: G !< Grid structure
   type(verticalGrid_type),                   intent(in)  :: GV !< Vertical grid structure
   real, dimension(SZI_(G),SZJ_(G), SZK_(G)), intent(out) :: T !< Potential temperature (degC)
   real, dimension(SZI_(G),SZJ_(G), SZK_(G)), intent(out) :: S !< Salinity (psu)
   real, dimension(SZI_(G),SZJ_(G), SZK_(G)), intent(in)  :: h !< Layer thickness (m or Pa)
   type(param_file_type),                     intent(in)  :: param_file !< Input parameter structure
+  logical,       optional, intent(in)  :: just_read_params !< If present and true, this call will
+                                                      !! only read parameters without changing h.
   ! Local variables
   real :: eta(SZK_(G)+1) ! The 1-d nominal positions of the interfaces.
   real :: S_ref, SST_ref, dTdZ, MLD
   real :: zC
+  logical :: just_read    ! If true, just read parameters but set nothing.
   integer :: i, j, k, is, ie, js, je, isd, ied, jsd, jed, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
 
-  call log_version(param_file, mod, version)
-  call get_param(param_file,mod,"SCM_S_REF",S_ref, &
-                 'Reference salinity', units='1e-3',default=35.0)
-  call get_param(param_file,mod,"SCM_SST_REF",SST_ref, &
-                 'Reference surface temperature', units='C', fail_if_missing=.true.)
-  call get_param(param_file,mod,"SCM_DTDZ",dTdZ,                         &
+  just_read = .false. ; if (present(just_read_params)) just_read = just_read_params
+
+  if (.not.just_read) call log_version(param_file, mdl, version)
+  call get_param(param_file, mdl,"SCM_S_REF",S_ref, &
+                 'Reference salinity', units='1e-3',default=35.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_SST_REF",SST_ref, &
+                 'Reference surface temperature', units='C', &
+                 fail_if_missing=.not.just_read, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_DTDZ",dTdZ,                         &
                  'Initial temperature stratification below mixed layer', &
-                 units='C/m', fail_if_missing=.true.)
-  call get_param(param_file,mod,"SCM_MLD",MLD, &
-                 'Initial mixed layer depth', units='m', fail_if_missing=.true.)
+                 units='C/m', fail_if_missing=.not.just_read, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_MLD",MLD, &
+                 'Initial mixed layer depth', units='m', &
+                 fail_if_missing=.not.just_read, do_not_log=just_read)
+
+  if (just_read) return ! All run-time parameters have been read, so return.
 
   do j=js,je ; do i=is,ie
     eta(1) = 0. ! Reference to surface
@@ -101,36 +111,36 @@ subroutine SCM_idealized_hurricane_wind_init(Time, G, param_file, CS)
   allocate(CS)
 
   ! Read all relevant parameters and write them to the model log.
-  call log_version(param_file, mod, version, "")
-  call get_param(param_file, mod, "SCM_RHO_AIR", CS%rho_a,            &
+  call log_version(param_file, mdl, version, "")
+  call get_param(param_file, mdl, "SCM_RHO_AIR", CS%rho_a,            &
                  "Air density "//                                     &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='kg/m3', default=1.2)
-  call get_param(param_file, mod, "SCM_AMBIENT_PRESSURE", CS%p_n,     &
+  call get_param(param_file, mdl, "SCM_AMBIENT_PRESSURE", CS%p_n,     &
                  "Ambient pressure "//                                &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='Pa', default=101200.)
-  call get_param(param_file, mod, "SCM_CENTRAL_PRESSURE", CS%p_c,     &
+  call get_param(param_file, mdl, "SCM_CENTRAL_PRESSURE", CS%p_c,     &
                  "Central pressure "//                                &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='Pa', default=96800.)
-  call get_param(param_file, mod, "SCM_RADIUS_MAX_WINDS", CS%r_max,   &
+  call get_param(param_file, mdl, "SCM_RADIUS_MAX_WINDS", CS%r_max,   &
                  "Radius of maximum winds "//                         &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='m', default=50.e3)
-  call get_param(param_file, mod, "SCM_MAX_WIND_SPEED", CS%U_max,     &
+  call get_param(param_file, mdl, "SCM_MAX_WIND_SPEED", CS%U_max,     &
                  "Maximum wind speed "//                              &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='m/s', default=65.)
-  call get_param(param_file, mod, "SCM_YY", CS%YY,     &
+  call get_param(param_file, mdl, "SCM_YY", CS%YY,     &
                  "Y distance of station "//                           &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='m', default=50.e3)
-  call get_param(param_file, mod, "SCM_TRAN_SPEED", CS%TRAN_SPEED,     &
+  call get_param(param_file, mdl, "SCM_TRAN_SPEED", CS%TRAN_SPEED,     &
                  "Translation speed of hurricane"//                   &
                  "used in the SCM idealized hurricane wind profile.", &
                  units='m/s', default=5.0)
-  call get_param(param_file, mod, "RHO_0", CS%Rho0, &
+  call get_param(param_file, mdl, "RHO_0", CS%Rho0, &
                  "The mean ocean density used with BOUSSINESQ true to \n"//&
                  "calculate accelerations and the mass for conservation \n"//&
                  "properties, or with BOUSSINSEQ false to convert some \n"//&
@@ -139,16 +149,16 @@ subroutine SCM_idealized_hurricane_wind_init(Time, G, param_file, CS)
   ! The following parameter is a model run-time parameter which is used
   ! and logged elsewhere and so should not be logged here. The default
   ! value should be consistent with the rest of the model.
-  call get_param(param_file, mod, "GUST_CONST", CS%gust_const, &
+  call get_param(param_file, mdl, "GUST_CONST", CS%gust_const, &
                  "The background gustiness in the winds.", units="Pa", &
                  default=0.00, do_not_log=.true.)
 
 
 end subroutine SCM_idealized_hurricane_wind_init
 
-subroutine SCM_idealized_hurricane_wind_forcing(state, fluxes, day, G, CS)
+subroutine SCM_idealized_hurricane_wind_forcing(state, forces, day, G, CS)
   type(surface),                    intent(in)    :: state  !< Surface state structure
-  type(forcing),                    intent(inout) :: fluxes !< Surface fluxes structure
+  type(mech_forcing),               intent(inout) :: forces !< A structure with the driving mechanical forces
   type(time_type),                  intent(in)    :: day    !< Time in days
   type(ocean_grid_type),            intent(inout) :: G      !< Grid structure
   type(SCM_idealized_hurricane_CS), pointer       :: CS     !< Container for SCM parameters
@@ -156,7 +166,7 @@ subroutine SCM_idealized_hurricane_wind_forcing(state, fluxes, day, G, CS)
   integer :: i, j, is, ie, js, je, Isq, Ieq, Jsq, Jeq
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
   real :: pie, Deg2Rad
-  real :: U10, A, B, C, r, f,du10,rkm ! For wind profile expression
+  real :: U10, A, B, C, r, f, du10, rkm ! For wind profile expression
   real :: xx, t0 !for location
   real :: dp, rB
   real :: Cd ! Air-sea drag coefficient
@@ -172,7 +182,7 @@ subroutine SCM_idealized_hurricane_wind_forcing(state, fluxes, day, G, CS)
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
   ! Allocate the forcing arrays, if necessary.
-  call allocate_forcing_type(G, fluxes, stress=.true., ustar=.true.)
+  call allocate_mech_forcing(G, forces, stress=.true., ustar=.true.)
 
   pie = 4.0*atan(1.0) ; Deg2Rad = pie/180.
 
@@ -286,7 +296,7 @@ subroutine SCM_idealized_hurricane_wind_forcing(state, fluxes, day, G, CS)
     else
        Cd = 0.0018
     endif
-    fluxes%taux(I,j) = CS%rho_a * G%mask2dCu(I,j) * Cd*sqrt(du**2+dV**2)*dU
+    forces%taux(I,j) = CS%rho_a * G%mask2dCu(I,j) * Cd*sqrt(du**2+dV**2)*dU
   enddo ; enddo
   !/BR
   ! See notes above
@@ -304,14 +314,14 @@ subroutine SCM_idealized_hurricane_wind_forcing(state, fluxes, day, G, CS)
     else
        Cd = 0.0018
     endif
-    fluxes%tauy(I,j) = CS%rho_a * G%mask2dCv(I,j) * Cd*du10*dV
+    forces%tauy(I,j) = CS%rho_a * G%mask2dCv(I,j) * Cd*du10*dV
   enddo ; enddo
   ! Set the surface friction velocity, in units of m s-1. ustar is always positive.
   do j=js,je ; do i=is,ie
     !  This expression can be changed if desired, but need not be.
-    fluxes%ustar(i,j) = G%mask2dT(i,j) * sqrt(CS%gust_const/CS%Rho0 + &
-       sqrt(0.5*(fluxes%taux(I-1,j)**2 + fluxes%taux(I,j)**2) + &
-            0.5*(fluxes%tauy(i,J-1)**2 + fluxes%tauy(i,J)**2))/CS%Rho0)
+    forces%ustar(i,j) = G%mask2dT(i,j) * sqrt(CS%gust_const/CS%Rho0 + &
+       sqrt(0.5*(forces%taux(I-1,j)**2 + forces%taux(I,j)**2) + &
+            0.5*(forces%tauy(i,J-1)**2 + forces%tauy(i,J)**2))/CS%Rho0)
   enddo ; enddo
 
 end subroutine SCM_idealized_hurricane_wind_forcing

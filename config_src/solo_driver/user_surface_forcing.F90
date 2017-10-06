@@ -1,24 +1,7 @@
 module user_surface_forcing
-!***********************************************************************
-!*                   GNU General Public License                        *
-!* This file is a part of MOM.                                         *
-!*                                                                     *
-!* MOM is free software; you can redistribute it and/or modify it and  *
-!* are expected to follow the terms of the GNU General Public License  *
-!* as published by the Free Software Foundation; either version 2 of   *
-!* the License, or (at your option) any later version.                 *
-!*                                                                     *
-!* MOM is distributed in the hope that it will be useful, but WITHOUT  *
-!* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY  *
-!* or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public    *
-!* License for more details.                                           *
-!*                                                                     *
-!* For the full text of the GNU General Public License,                *
-!* write to: Free Software Foundation, Inc.,                           *
-!*           675 Mass Ave, Cambridge, MA 02139, USA.                   *
-!* or see:   http://www.gnu.org/licenses/gpl.html                      *
-!***********************************************************************
-!
+
+! This file is part of MOM6. See LICENSE.md for the license.
+
 !********+*********+*********+*********+*********+*********+*********+**
 !*                                                                     *
 !*  Rewritten by Robert Hallberg, June 2009                            *
@@ -65,7 +48,8 @@ use MOM_diag_mediator, only : register_diag_field, diag_ctrl
 use MOM_domains, only : pass_var, pass_vector, AGRID
 use MOM_error_handler, only : MOM_error, FATAL, WARNING, is_root_pe
 use MOM_file_parser, only : get_param, param_file_type, log_version
-use MOM_forcing_type, only : forcing, allocate_forcing_type
+use MOM_forcing_type, only : forcing, mech_forcing
+use MOM_forcing_type, only : allocate_forcing_type, allocate_mech_forcing
 use MOM_grid, only : ocean_grid_type
 use MOM_io, only : file_exists, read_data
 use MOM_time_manager, only : time_type, operator(+), operator(/), get_time
@@ -101,18 +85,19 @@ end type user_surface_forcing_CS
 
 contains
 
-subroutine USER_wind_forcing(state, fluxes, day, G, CS)
-  type(surface),                 intent(inout) :: state
-  type(forcing),                 intent(inout) :: fluxes
+subroutine USER_wind_forcing(sfc_state, forces, day, G, CS)
+  type(surface),                 intent(inout) :: sfc_state !< A structure containing fields that
+                                                    !! describe the surface state of the ocean.
+  type(mech_forcing),            intent(inout) :: forces !< A structure with the driving mechanical forces
   type(time_type),               intent(in)    :: day
-  type(ocean_grid_type),         intent(inout) :: G
+  type(ocean_grid_type),         intent(inout) :: G    !< The ocean's grid structure
   type(user_surface_forcing_CS), pointer       :: CS
 
-!   This subroutine sets the surface wind stresses, fluxes%taux and fluxes%tauy.
+!   This subroutine sets the surface wind stresses, forces%taux and forces%tauy.
 ! These are the stresses in the direction of the model grid (i.e. the same
 ! direction as the u- and v- velocities.)  They are both in Pa.
 !   In addition, this subroutine can be used to set the surface friction
-! velocity, fluxes%ustar, in m s-1. This is needed with a bulk mixed layer.
+! velocity, forces%ustar, in m s-1. This is needed with a bulk mixed layer.
 !
 ! Arguments: state - A structure containing fields that describe the
 !                    surface state of the ocean.
@@ -137,7 +122,7 @@ subroutine USER_wind_forcing(state, fluxes, day, G, CS)
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
   ! Allocate the forcing arrays, if necessary.
-  call allocate_forcing_type(G, fluxes, stress=.true., ustar=.true.)
+  call allocate_mech_forcing(G, forces, stress=.true., ustar=.true.)
 
   !  Set the surface wind stresses, in units of Pa.  A positive taux
   !  accelerates the ocean to the (pseudo-)east.
@@ -145,29 +130,31 @@ subroutine USER_wind_forcing(state, fluxes, day, G, CS)
   !  The i-loop extends to is-1 so that taux can be used later in the
   ! calculation of ustar - otherwise the lower bound would be Isq.
   do j=js,je ; do I=is-1,Ieq
-    fluxes%taux(I,j) = G%mask2dCu(I,j) * 0.0  ! Change this to the desired expression.
+    forces%taux(I,j) = G%mask2dCu(I,j) * 0.0  ! Change this to the desired expression.
   enddo ; enddo
   do J=js-1,Jeq ; do i=is,ie
-    fluxes%tauy(i,J) = G%mask2dCv(i,J) * 0.0  ! Change this to the desired expression.
+    forces%tauy(i,J) = G%mask2dCv(i,J) * 0.0  ! Change this to the desired expression.
   enddo ; enddo
 
   !    Set the surface friction velocity, in units of m s-1.  ustar
   !  is always positive.
-  if (associated(fluxes%ustar)) then ; do j=js,je ; do i=is,ie
+  if (associated(forces%ustar)) then ; do j=js,je ; do i=is,ie
     !  This expression can be changed if desired, but need not be.
-    fluxes%ustar(i,j) = G%mask2dT(i,j) * sqrt(CS%gust_const/CS%Rho0 + &
-       sqrt(0.5*(fluxes%taux(I-1,j)**2 + fluxes%taux(I,j)**2) + &
-            0.5*(fluxes%tauy(i,J-1)**2 + fluxes%tauy(i,J)**2))/CS%Rho0)
+    forces%ustar(i,j) = G%mask2dT(i,j) * sqrt(CS%gust_const/CS%Rho0 + &
+       sqrt(0.5*(forces%taux(I-1,j)**2 + forces%taux(I,j)**2) + &
+            0.5*(forces%tauy(i,J-1)**2 + forces%tauy(i,J)**2))/CS%Rho0)
   enddo ; enddo ; endif
 
 end subroutine USER_wind_forcing
 
-subroutine USER_buoyancy_forcing(state, fluxes, day, dt, G, CS)
-  type(surface),                 intent(inout) :: state
+subroutine USER_buoyancy_forcing(sfc_state, fluxes, day, dt, G, CS)
+  type(surface),                 intent(inout) :: sfc_state !< A structure containing fields that
+                                                    !! describe the surface state of the ocean.
   type(forcing),                 intent(inout) :: fluxes
   type(time_type),               intent(in)    :: day
-  real,                          intent(in)    :: dt
-  type(ocean_grid_type),         intent(in)    :: G
+  real,                          intent(in)    :: dt   !< The amount of time over which
+                                                       !! the fluxes apply, in s
+  type(ocean_grid_type),         intent(in)    :: G    !< The ocean's grid structure
   type(user_surface_forcing_CS), pointer       :: CS
 
 !    This subroutine specifies the current surface fluxes of buoyancy or
@@ -277,10 +264,10 @@ subroutine USER_buoyancy_forcing(state, fluxes, day, dt, G, CS)
         Salin_restore = 0.0
 
         fluxes%heat_added(i,j) = (G%mask2dT(i,j) * (rhoXcp * CS%Flux_const)) * &
-            (Temp_restore - state%SST(i,j))
+            (Temp_restore - sfc_state%SST(i,j))
         fluxes%vprec(i,j) = - (G%mask2dT(i,j) * (CS%Rho0*CS%Flux_const)) * &
-            ((Salin_restore - state%SSS(i,j)) / &
-             (0.5 * (Salin_restore + state%SSS(i,j))))
+            ((Salin_restore - sfc_state%SSS(i,j)) / &
+             (0.5 * (Salin_restore + sfc_state%SSS(i,j))))
       enddo ; enddo
     else
       !   When modifying the code, comment out this error message.  It is here
@@ -296,7 +283,7 @@ subroutine USER_buoyancy_forcing(state, fluxes, day, dt, G, CS)
         density_restore = 1030.0
 
         fluxes%buoy(i,j) = G%mask2dT(i,j) * buoy_rest_const * &
-                          (density_restore - state%sfc_density(i,j))
+                          (density_restore - sfc_state%sfc_density(i,j))
       enddo ; enddo
     endif
   endif                                             ! end RESTOREBUOY
@@ -317,8 +304,8 @@ end subroutine alloc_if_needed
 
 subroutine USER_surface_forcing_init(Time, G, param_file, diag, CS)
   type(time_type),               intent(in) :: Time
-  type(ocean_grid_type),         intent(in) :: G
-  type(param_file_type),         intent(in) :: param_file
+  type(ocean_grid_type),         intent(in) :: G    !< The ocean's grid structure
+  type(param_file_type),         intent(in) :: param_file !< A structure to parse for run-time parameters
   type(diag_ctrl), target,       intent(in) :: diag
   type(user_surface_forcing_CS), pointer    :: CS
 ! Arguments: Time - The current model time.
@@ -331,7 +318,7 @@ subroutine USER_surface_forcing_init(Time, G, param_file, diag, CS)
 
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
-  character(len=40)  :: mod = "user_surface_forcing" ! This module's name.
+  character(len=40)  :: mdl = "user_surface_forcing" ! This module's name.
 
   if (associated(CS)) then
     call MOM_error(WARNING, "USER_surface_forcing_init called with an associated "// &
@@ -342,30 +329,30 @@ subroutine USER_surface_forcing_init(Time, G, param_file, diag, CS)
   CS%diag => diag
 
   ! Read all relevant parameters and write them to the model log.
-  call log_version(param_file, mod, version, "")
-  call get_param(param_file, mod, "ENABLE_THERMODYNAMICS", CS%use_temperature, &
+  call log_version(param_file, mdl, version, "")
+  call get_param(param_file, mdl, "ENABLE_THERMODYNAMICS", CS%use_temperature, &
                  "If true, Temperature and salinity are used as state \n"//&
                  "variables.", default=.true.)
 
-  call get_param(param_file, mod, "G_EARTH", CS%G_Earth, &
+  call get_param(param_file, mdl, "G_EARTH", CS%G_Earth, &
                  "The gravitational acceleration of the Earth.", &
                  units="m s-2", default = 9.80)
-  call get_param(param_file, mod, "RHO_0", CS%Rho0, &
+  call get_param(param_file, mdl, "RHO_0", CS%Rho0, &
                  "The mean ocean density used with BOUSSINESQ true to \n"//&
                  "calculate accelerations and the mass for conservation \n"//&
                  "properties, or with BOUSSINSEQ false to convert some \n"//&
                  "parameters from vertical units of m to kg m-2.", &
                  units="kg m-3", default=1035.0)
-  call get_param(param_file, mod, "GUST_CONST", CS%gust_const, &
+  call get_param(param_file, mdl, "GUST_CONST", CS%gust_const, &
                  "The background gustiness in the winds.", units="Pa", &
                  default=0.02)
 
-  call get_param(param_file, mod, "RESTOREBUOY", CS%restorebuoy, &
+  call get_param(param_file, mdl, "RESTOREBUOY", CS%restorebuoy, &
                  "If true, the buoyancy fluxes drive the model back \n"//&
                  "toward some specified surface state with a rate \n"//&
                  "given by FLUXCONST.", default= .false.)
   if (CS%restorebuoy) then
-    call get_param(param_file, mod, "FLUXCONST", CS%Flux_const, &
+    call get_param(param_file, mdl, "FLUXCONST", CS%Flux_const, &
                  "The constant that relates the restoring surface fluxes \n"//&
                  "to the relative surface anomalies (akin to a piston \n"//&
                  "velocity).  Note the non-MKS units.", units="m day-1", &

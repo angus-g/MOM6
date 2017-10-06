@@ -1,27 +1,10 @@
 module MOM_domains
 
-!***********************************************************************
-!*                   GNU General Public License                        *
-!* This file is a part of MOM.                                         *
-!*                                                                     *
-!* MOM is free software; you can redistribute it and/or modify it and  *
-!* are expected to follow the terms of the GNU General Public License  *
-!* as published by the Free Software Foundation; either version 2 of   *
-!* the License, or (at your option) any later version.                 *
-!*                                                                     *
-!* MOM is distributed in the hope that it will be useful, but WITHOUT  *
-!* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY  *
-!* or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public    *
-!* License for more details.                                           *
-!*                                                                     *
-!* For the full text of the GNU General Public License,                *
-!* write to: Free Software Foundation, Inc.,                           *
-!*           675 Mass Ave, Cambridge, MA 02139, USA.                   *
-!* or see:   http://www.gnu.org/licenses/gpl.html                      *
-!***********************************************************************
+! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms, only : PE_here, root_PE, num_PEs, MOM_infra_init, MOM_infra_end
 use MOM_coms, only : broadcast, sum_across_PEs, min_across_PEs, max_across_PEs
+use MOM_cpu_clock, only : cpu_clock_begin, cpu_clock_end
 use MOM_error_handler, only : MOM_error, MOM_mesg, NOTE, WARNING, FATAL, is_root_pe
 use MOM_file_parser, only : get_param, log_param, log_version
 use MOM_file_parser, only : param_file_type
@@ -60,7 +43,7 @@ public :: AGRID, BGRID_NE, CGRID_NE, SCALAR_PAIR, BITWISE_EXACT_SUM, CORNER
 public :: To_East, To_West, To_North, To_South, To_All, Omit_Corners
 public :: create_group_pass, do_group_pass, group_pass_type
 public :: start_group_pass, complete_group_pass
-public :: compute_block_extent
+public :: compute_block_extent, get_global_shape
 
 interface pass_var
   module procedure pass_var_3d, pass_var_2d
@@ -139,13 +122,29 @@ integer, parameter :: To_All = To_East + To_West + To_North + To_South
 
 contains
 
-subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo)
-  real, dimension(:,:,:), intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  logical,      optional, intent(in)    :: complete
-  integer,      optional, intent(in)    :: position
-  integer,      optional, intent(in)    :: halo
+!> pass_var_3d does a halo update for a three-dimensional array.
+subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo, &
+                       clock)
+  real, dimension(:,:,:), intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! sothe halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  logical,      optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                                    !! halo updates should be completed before
+                                                    !! progress resumes. Omitting complete is the
+                                                    !! same as setting complete to .true.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER by
+                                                    !! default.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: array - The array which is having its halos points exchanged.
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
@@ -164,6 +163,8 @@ subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo)
   integer :: dirflag
   logical :: block_til_complete
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
   block_til_complete = .true.
@@ -178,16 +179,32 @@ subroutine pass_var_3d(array, MOM_dom, sideflag, complete, position, halo)
                           complete=block_til_complete, position=position)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_var_3d
 
-
-subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo)
-  real, dimension(:,:),  intent(inout) :: array
-  type(MOM_domain_type), intent(inout) :: MOM_dom
-  integer,     optional, intent(in)    :: sideflag
-  logical,     optional, intent(in)    :: complete
-  integer,     optional, intent(in)    :: position
-  integer,     optional, intent(in)    :: halo
+!> pass_var_2d does a halo update for a two-dimensional array.
+subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo, &
+                       clock)
+  real, dimension(:,:),  intent(inout) :: array    !< The array which is having its halos points
+                                                   !! exchanged.
+  type(MOM_domain_type), intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                   !! needed to determine where data should be sent.
+  integer,     optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  logical,     optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                                   !! halo updates should be completed before
+                                                   !! progress resumes.  Omitting complete is the
+                                                   !! same as setting complete to .true.
+  integer,     optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                   !!  This is usally CORNER, but is CENTER
+                                                   !! by default.
+  integer,     optional, intent(in)    :: halo     !< The size of the halo to update - the full halo
+                                                   !! by default.
+  integer,      optional, intent(in)   :: clock    !< The handle for a cpu time clock that should be
+                                                   !! started then stopped to time this routine.
 ! Arguments: array - The array which is having its halos points exchanged.
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
@@ -207,6 +224,8 @@ subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo)
   integer :: dirflag
   logical :: block_til_complete
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
   block_til_complete = .true.
@@ -221,16 +240,34 @@ subroutine pass_var_2d(array, MOM_dom, sideflag, complete, position, halo)
                         complete=block_til_complete, position=position)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_var_2d
 
-function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo)
-  real, dimension(:,:),   intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  integer,      optional, intent(in)    :: position
-  logical,      optional, intent(in)    :: complete
-  integer,      optional, intent(in)    :: halo
-  integer :: pass_var_start_2d
+!> pass_var_start_2d starts a halo update for a two-dimensional array.
+function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo, &
+                           clock)
+  real, dimension(:,:),   intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER
+                                                    !! by default.
+  logical,      optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                                    !! halo updates should be completed before
+                                                    !! progress resumes.  Omitting complete is the
+                                                    !! same as setting complete to .true.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
+  integer                               :: pass_var_start_2d  !<The integer index for this update.
 ! Arguments: array - The array which is having its halos points exchanged.
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
@@ -250,6 +287,8 @@ function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo)
 !  (return value) - The integer index for this update.
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
 
@@ -261,16 +300,35 @@ function pass_var_start_2d(array, MOM_dom, sideflag, position, complete, halo)
     pass_var_start_2d = mpp_start_update_domains(array, MOM_dom%mpp_domain, &
                             flags=dirflag, position=position)
   endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end function pass_var_start_2d
 
-function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo)
-  real, dimension(:,:,:), intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  integer,      optional, intent(in)    :: position
-  logical,      optional, intent(in)    :: complete
-  integer,      optional, intent(in)    :: halo
-  integer                               :: pass_var_start_3d
+!> pass_var_start_3d starts a halo update for a three-dimensional array.
+function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo, &
+                           clock)
+  real, dimension(:,:,:), intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER
+                                                    !! by default.
+  logical,      optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                                    !! halo updates should be completed before
+                                                    !! progress resumes.  Omitting complete is the
+                                                    !! same as setting complete to .true.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
+  integer                               :: pass_var_start_3d  !< The integer index for this update.
 ! Arguments: array - The array which is having its halos points exchanged.
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
@@ -290,6 +348,8 @@ function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo)
 !  (return value) - The integer index for this update.
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
 
@@ -301,15 +361,33 @@ function pass_var_start_3d(array, MOM_dom, sideflag, position, complete, halo)
     pass_var_start_3d = mpp_start_update_domains(array, MOM_dom%mpp_domain, &
                             flags=dirflag, position=position)
   endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end function pass_var_start_3d
 
-subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, halo)
-  integer,                intent(in)    :: id_update
-  real, dimension(:,:),   intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  integer,      optional, intent(in)    :: position
-  integer,      optional, intent(in)    :: halo
+!> pass_var_complete_2d completes a halo update for a two-dimensional array.
+subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, halo, &
+                                clock)
+  integer,                intent(in)    :: id_update !< The integer id of this update which has
+                                                    !! been returned from a previous call to
+                                                    !! pass_var_start.
+  real, dimension(:,:),   intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER
+                                                    !! by default.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: id_update - The integer id of this update which has been returned
 !                        from a previous call to pass_var_start.
 !  (inout)   array - The array which is having its halos points exchanged.
@@ -326,6 +404,8 @@ subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, h
 !  (in,opt)  halo - The size of the halo to update - the full halo by default.
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
 
@@ -337,16 +417,33 @@ subroutine pass_var_complete_2d(id_update, array, MOM_dom, sideflag, position, h
     call mpp_complete_update_domains(id_update, array, MOM_dom%mpp_domain, &
                                      flags=dirflag, position=position)
   endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine pass_var_complete_2d
 
-subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, halo)
-  integer,                intent(in)    :: id_update
-  real, dimension(:,:,:), intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  integer,      optional, intent(in)    :: position
-  integer,      optional, intent(in)    :: halo
+!> pass_var_complete_3d completes a halo update for a three-dimensional array.
+subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, halo, &
+                                clock)
+  integer,                intent(in)    :: id_update !< The integer id of this update which has
+                                                    !! been returned from a previous call to
+                                                    !! pass_var_start.
+  real, dimension(:,:,:), intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER
+                                                    !! by default.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: id_update - The integer id of this update which has been returned
 !                        from a previous call to pass_var_start.
 !  (inout)   array - The array which is having its halos points exchanged.
@@ -363,6 +460,8 @@ subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, h
 !  (in,opt)  halo - The size of the halo to update - the full halo by default.
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
 
@@ -375,16 +474,39 @@ subroutine pass_var_complete_3d(id_update, array, MOM_dom, sideflag, position, h
                                      flags=dirflag, position=position)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_var_complete_3d
 
-
-subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo)
-  real, dimension(:,:),  intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type), intent(inout) :: MOM_dom
-  integer,     optional, intent(in)    :: direction
-  integer,     optional, intent(in)    :: stagger
-  logical,     optional, intent(in)    :: complete
-  integer,     optional, intent(in)    :: halo
+!> pass_vector_2d does a halo update for a pair of two-dimensional arrays
+!! representing the compontents of a two-dimensional horizontal vector.
+subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+                          clock)
+  real, dimension(:,:),  intent(inout) :: u_cmpt    !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:),  intent(inout) :: v_cmpt    !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type), intent(inout) :: MOM_dom   !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,     optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,     optional, intent(in)    :: stagger   !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  logical,     optional, intent(in)    :: complete  !< An optional argument indicating whether the
+                                     !! halo updates should be completed before progress resumes.
+                                     !! Omitting complete is the same as setting complete to .true.
+  integer,     optional, intent(in)    :: halo      !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,     optional, intent(in)    :: clock     !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: u_cmpt - The nominal zonal (u) component of the vector pair which
 !                     is having its halos points exchanged.
 !  (inout)   v_cmpt - The nominal meridional (v) component of the vector pair
@@ -412,6 +534,8 @@ subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete,
   integer :: dirflag
   logical :: block_til_complete
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -429,13 +553,32 @@ subroutine pass_vector_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete,
                    gridtype=stagger_local, complete = block_til_complete)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_vector_2d
 
-subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scalar)
-  real, dimension(:,:),  intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type), intent(inout) :: MOM_dom
-  integer,     optional, intent(in)    :: stagger
-  logical,     optional, intent(in)    :: scalar
+!> fill_vector_symmetric_edges_2d does an usual set of halo updates that only
+!! fill in the values at the edge of a pair of symmetric memory two-dimensional
+!! arrays representing the compontents of a two-dimensional horizontal vector.
+!! If symmetric memory is not being used, this subroutine does nothing except to
+!! possibly turn optional cpu clocks on or off.
+subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scalar, &
+                                          clock)
+  real, dimension(:,:),  intent(inout) :: u_cmpt  !< The nominal zonal (u) component of the vector
+                                                  !! pair which is having its halos points
+                                                  !! exchanged.
+  real, dimension(:,:),  intent(inout) :: v_cmpt  !< The nominal meridional (v) component of the
+                                                  !! vector pair which is having its halos points
+                                                  !! exchanged.
+  type(MOM_domain_type), intent(inout) :: MOM_dom !< The MOM_domain_type containing the mpp_domain
+                                                  !! needed to determine where data should be
+                                                  !! sent.
+  integer,     optional, intent(in)    :: stagger !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  logical,     optional, intent(in)    :: scalar  !< An optional argument indicating whether.
+  integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                   !! started then stopped to time this routine.
 ! Arguments: u_cmpt - The nominal zonal (u) component of the vector pair which
 !                     is having its halos points exchanged.
 !  (inout)   v_cmpt - The nominal meridional (v) component of the vector pair
@@ -454,7 +597,11 @@ subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scal
   real, allocatable, dimension(:) :: sbuff_x, sbuff_y, wbuff_x, wbuff_y
   logical :: block_til_complete
 
-  if (.not. MOM_dom%symmetric) return
+  if (.not. MOM_dom%symmetric) then
+      return
+  endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
 
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
@@ -504,15 +651,39 @@ subroutine fill_vector_symmetric_edges_2d(u_cmpt, v_cmpt, MOM_dom, stagger, scal
     deallocate(wbuff_y) ; deallocate(sbuff_y)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine fill_vector_symmetric_edges_2d
 
-subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo)
-  real, dimension(:,:,:), intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  logical,      optional, intent(in)    :: complete
-  integer,      optional, intent(in)    :: halo
+!> pass_vector_3d does a halo update for a pair of three-dimensional arrays
+!! representing the compontents of a three-dimensional horizontal vector.
+subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+                          clock)
+  real, dimension(:,:,:), intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:,:), intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  logical,      optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                     !! halo updates should be completed before progress resumes.
+                                     !! Omitting complete is the same as setting complete to .true.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: u_cmpt - The nominal zonal (u) component of the vector pair which
 !                     is having its halos points exchanged.
 !  (inout)   v_cmpt - The nominal meridional (v) component of the vector pair
@@ -540,6 +711,8 @@ subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete,
   integer :: dirflag
   logical :: block_til_complete
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -557,16 +730,41 @@ subroutine pass_vector_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete,
                    gridtype=stagger_local, complete = block_til_complete)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_vector_3d
 
-function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo)
-  real, dimension(:,:),   intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  logical,      optional, intent(in)    :: complete
-  integer,      optional, intent(in)    :: halo
-  integer                               :: pass_vector_start_2d
+!> pass_vector_start_2d starts a halo update for a pair of two-dimensional arrays
+!! representing the compontents of a two-dimensional horizontal vector.
+function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+                              clock)
+  real, dimension(:,:),   intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:),   intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  logical,      optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                     !! halo updates should be completed before progress resumes.
+                                     !! Omitting complete is the same as setting complete to .true.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
+  integer                               :: pass_vector_start_2d !< The integer index for this
+                                                                !! update.
 ! Arguments: u_cmpt - The nominal zonal (u) component of the vector pair which
 !                     is having its halos points exchanged.
 !  (inout)   v_cmpt - The nominal meridional (v) component of the vector pair
@@ -594,6 +792,8 @@ function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, compl
   integer :: stagger_local
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -608,17 +808,42 @@ function pass_vector_start_2d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, compl
     pass_vector_start_2d = mpp_start_update_domains(u_cmpt, v_cmpt, &
         MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
   endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end function pass_vector_start_2d
 
-function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo)
-  real, dimension(:,:,:), intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  logical,      optional, intent(in)    :: complete
-  integer,      optional, intent(in)    :: halo
-  integer                               :: pass_vector_start_3d
+!> pass_vector_start_3d starts a halo update for a pair of three-dimensional arrays
+!! representing the compontents of a three-dimensional horizontal vector.
+function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, complete, halo, &
+                              clock)
+  real, dimension(:,:,:), intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:,:), intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  logical,      optional, intent(in)    :: complete !< An optional argument indicating whether the
+                                     !! halo updates should be completed before progress resumes.
+                                     !! Omitting complete is the same as setting complete to .true.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
+  integer                               :: pass_vector_start_3d !< The integer index for this
+                                                                !! update.
 ! Arguments: u_cmpt - The nominal zonal (u) component of the vector pair which
 !                     is having its halos points exchanged.
 !  (inout)   v_cmpt - The nominal meridional (v) component of the vector pair
@@ -646,6 +871,8 @@ function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, compl
   integer :: stagger_local
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -661,15 +888,39 @@ function pass_vector_start_3d(u_cmpt, v_cmpt, MOM_dom, direction, stagger, compl
         MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end function pass_vector_start_3d
 
-subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo)
-  integer,                intent(in)    :: id_update
-  real, dimension(:,:),   intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  integer,      optional, intent(in)    :: halo
+!> pass_vector_complete_2d completes a halo update for a pair of two-dimensional arrays
+!! representing the compontents of a two-dimensional horizontal vector.
+subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+                                   clock)
+  integer,                intent(in)    :: id_update !< The integer id of this update which has been
+                                                    !! returned from a previous call to
+                                                    !! pass_var_start.
+  real, dimension(:,:),   intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:),   intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: id_update - The integer id of this update which has been returned
 !                        from a previous call to pass_var_start.
 !  (inout)   u_cmpt - The nominal zonal (u) component of the vector pair which
@@ -694,6 +945,8 @@ subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction
 !  (return value) - The integer index for this update.
   integer :: stagger_local
   integer :: dirflag
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
 
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
@@ -710,15 +963,39 @@ subroutine pass_vector_complete_2d(id_update, u_cmpt, v_cmpt, MOM_dom, direction
              MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_vector_complete_2d
 
-subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo)
-  integer,                intent(in)    :: id_update
-  real, dimension(:,:,:), intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  integer,      optional, intent(in)    :: halo
+!> pass_vector_complete_3d completes a halo update for a pair of three-dimensional
+!! arrays representing the compontents of a three-dimensional horizontal vector.
+subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+                                   clock)
+  integer,                intent(in)    :: id_update !< The integer id of this update which has been
+                                                    !! returned from a previous call to
+                                                    !! pass_var_start.
+  real, dimension(:,:,:), intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:,:), intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments: id_update - The integer id of this update which has been returned
 !                        from a previous call to pass_var_start.
 !  (inout)   u_cmpt - The nominal zonal (u) component of the vector pair which
@@ -744,6 +1021,8 @@ subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction
   integer :: stagger_local
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -759,16 +1038,32 @@ subroutine pass_vector_complete_3d(id_update, u_cmpt, v_cmpt, MOM_dom, direction
              MOM_dom%mpp_domain, flags=dirflag, gridtype=stagger_local)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine pass_vector_complete_3d
 
+!> create_var_group_pass_2d sets up a group of two-dimensional array halo updates.
 subroutine create_var_group_pass_2d(group, array, MOM_dom, sideflag, position, &
-                                    halo)
-  type(group_pass_type),  intent(inout) :: group
-  real, dimension(:,:),   intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  integer,      optional, intent(in)    :: position
-  integer,      optional, intent(in)    :: halo
+                                    halo, clock)
+  type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
+                                                    !! group update. This data will be used in
+                                                    !! do_group_pass.
+  real, dimension(:,:),   intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER
+                                                    !! by default.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments:
 !  (inout)   group - The data type that store information for group update.
 !                    This data will be used in do_group_pass.
@@ -786,6 +1081,8 @@ subroutine create_var_group_pass_2d(group, array, MOM_dom, sideflag, position, &
 !  (in,opt)  halo - The size of the halo to update - the full halo by default.
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
 
@@ -799,16 +1096,33 @@ subroutine create_var_group_pass_2d(group, array, MOM_dom, sideflag, position, &
     call mpp_create_group_update(group, array, MOM_dom%mpp_domain, flags=dirflag, &
                                  position=position)
   endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine create_var_group_pass_2d
 
-subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, halo)
-  type(group_pass_type),  intent(inout) :: group
-  real, dimension(:,:,:), intent(inout) :: array
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: sideflag
-  integer,      optional, intent(in)    :: position
-  integer,      optional, intent(in)    :: halo
+!> create_var_group_pass_3d sets up a group of three-dimensional array halo updates.
+subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, halo, &
+                                    clock)
+  type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
+                                                    !! group update. This data will be used in
+                                                    !! do_group_pass.
+  real, dimension(:,:,:), intent(inout) :: array    !< The array which is having its halos points
+                                                    !! exchanged.
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: sideflag !< An optional integer indicating which
+      !! directions the data should be sent. It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH.  For example, TO_EAST sends the data to the processor to the east,
+      !! so the halos on the western side are filled.  TO_ALL is the default if sideflag is omitted.
+  integer,      optional, intent(in)    :: position !< An optional argument indicating the position.
+                                                    !! This is usally CORNER, but is CENTER
+                                                    !! by default.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments:
 !  (inout)   group - The data type that store information for group update.
 !                    This data will be used in do_group_pass.
@@ -826,6 +1140,8 @@ subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, h
 !  (in,opt)  halo - The size of the halo to update - the full halo by default.
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   dirflag = To_All ! 60
   if (present(sideflag)) then ; if (sideflag > 0) dirflag = sideflag ; endif
 
@@ -840,16 +1156,39 @@ subroutine create_var_group_pass_3d(group, array, MOM_dom, sideflag, position, h
                                  position=position)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine create_var_group_pass_3d
 
+!> create_vector_group_pass_2d sets up a group of two-dimensional vector halo updates.
+subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+                                       clock)
+  type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
+                                                    !! group update. This data will be used in
+                                                    !! do_group_pass.
+  real, dimension(:,:),   intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:),   intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
 
-subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo)
-  type(group_pass_type),  intent(inout) :: group
-  real, dimension(:,:),   intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  integer,      optional, intent(in)    :: halo
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
 ! Arguments:
 !  (inout)   group - The data type that store information for group update.
 !                    This data will be used in do_group_pass.
@@ -875,6 +1214,8 @@ subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction
   integer :: stagger_local
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -891,16 +1232,41 @@ subroutine create_vector_group_pass_2d(group, u_cmpt, v_cmpt, MOM_dom, direction
     call mpp_create_group_update(group, u_cmpt, v_cmpt, MOM_dom%mpp_domain, &
             flags=dirflag, gridtype=stagger_local)
   endif
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine create_vector_group_pass_2d
 
-subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo)
-  type(group_pass_type),  intent(inout) :: group
-  real, dimension(:,:,:), intent(inout) :: u_cmpt, v_cmpt
-  type(MOM_domain_type),  intent(inout) :: MOM_dom
-  integer,      optional, intent(in)    :: direction
-  integer,      optional, intent(in)    :: stagger
-  integer,      optional, intent(in)    :: halo
+!> create_vector_group_pass_3d sets up a group of three-dimensional vector halo updates.
+subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction, stagger, halo, &
+                                       clock)
+  type(group_pass_type),  intent(inout) :: group    !< The data type that store information for
+                                                    !! group update. This data will be used in
+                                                    !! do_group_pass.
+  real, dimension(:,:,:), intent(inout) :: u_cmpt   !< The nominal zonal (u) component of the vector
+                                                    !! pair which is having its halos points
+                                                    !! exchanged.
+  real, dimension(:,:,:), intent(inout) :: v_cmpt   !< The nominal meridional (v) component of the
+                                                    !! vector pair which is having its halos points
+                                                    !! exchanged.
+
+  type(MOM_domain_type),  intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: direction !< An optional integer indicating which
+      !! directions the data should be sent.  It is TO_ALL or the sum of any of TO_EAST, TO_WEST,
+      !! TO_NORTH, and TO_SOUTH, possibly plus SCALAR_PAIR if these are paired non-directional
+      !! scalars discretized at the typical vector component locations.  For example, TO_EAST sends
+      !! the data to the processor to the east, so the halos on the western side are filled. TO_ALL
+      !! is the default if omitted.
+  integer,      optional, intent(in)    :: stagger  !< An optional flag, which may be one of A_GRID,
+                     !! BGRID_NE, or CGRID_NE, indicating where the two components of the vector are
+                     !! discretized. Omitting stagger is the same as setting it to CGRID_NE.
+  integer,      optional, intent(in)    :: halo     !< The size of the halo to update - the full
+                                                    !! halo by default.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
+
 ! Arguments:
 !  (inout)   group - The data type that store information for group update.
 !                    This data will be used in do_group_pass.
@@ -927,6 +1293,8 @@ subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction
   integer :: stagger_local
   integer :: dirflag
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   stagger_local = CGRID_NE ! Default value for type of grid
   if (present(stagger)) stagger_local = stagger
 
@@ -944,39 +1312,71 @@ subroutine create_vector_group_pass_3d(group, u_cmpt, v_cmpt, MOM_dom, direction
             flags=dirflag, gridtype=stagger_local)
   endif
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine create_vector_group_pass_3d
 
-subroutine do_group_pass(group, MOM_dom)
-  type(group_pass_type), intent(inout) :: group
-  type(MOM_domain_type), intent(inout) :: MOM_dom
-  real                                 :: d_type
+!> do_group_pass carries out a group halo update.
+subroutine do_group_pass(group, MOM_dom, clock)
+  type(group_pass_type), intent(inout) :: group     !< The data type that store information for
+                                                    !! group update. This data will be used in
+                                                    !! do_group_pass.
+  type(MOM_domain_type), intent(inout) :: MOM_dom   !< The MOM_domain_type containing the mpp_domain
+                                                    !! needed to determine where data should be
+                                                    !! sent.
+  integer,      optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                    !! started then stopped to time this routine.
+  real :: d_type
 
 ! Arguments:
 !  (inout)   group - The data type that store information for group update.
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
 
   call mpp_do_group_update(group, MOM_dom%mpp_domain, d_type)
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine do_group_pass
 
-subroutine start_group_pass(group, MOM_dom)
-  type(group_pass_type), intent(inout) :: group
-  type(MOM_domain_type), intent(inout) :: MOM_dom
+!> start_group_pass starts out a group halo update.
+subroutine start_group_pass(group, MOM_dom, clock)
+  type(group_pass_type), intent(inout) :: group    !< The data type that store information for
+                                                   !! group update. This data will be used in
+                                                   !! do_group_pass.
+  type(MOM_domain_type), intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                   !! needed to determine where data should be
+                                                   !! sent.
+  integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                   !! started then stopped to time this routine.
+
   real                                 :: d_type
 
 ! Arguments:
 !  (inout)   group - The data type that store information for group update.
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
 
   call mpp_start_group_update(group, MOM_dom%mpp_domain, d_type)
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
+
 end subroutine start_group_pass
 
-subroutine complete_group_pass(group, MOM_dom)
-  type(group_pass_type), intent(inout) :: group
-  type(MOM_domain_type), intent(inout) :: MOM_dom
+!> complete_group_pass completes a group halo update.
+subroutine complete_group_pass(group, MOM_dom, clock)
+  type(group_pass_type), intent(inout) :: group    !< The data type that store information for
+                                                   !! group update. This data will be used in
+                                                   !! do_group_pass.
+  type(MOM_domain_type), intent(inout) :: MOM_dom  !< The MOM_domain_type containing the mpp_domain
+                                                   !! needed to determine where data should be
+                                                   !! sent.
+  integer,     optional, intent(in)    :: clock    !< The handle for a cpu time clock that should be
+                                                   !! started then stopped to time this routine.
   real                                 :: d_type
 
 ! Arguments:
@@ -984,25 +1384,51 @@ subroutine complete_group_pass(group, MOM_dom)
 !  (in)      MOM_dom - The MOM_domain_type containing the mpp_domain needed to
 !                      determine where data should be sent.
 
+  if (present(clock)) then ; if (clock>0) call cpu_clock_begin(clock) ; endif
+
   call mpp_complete_group_update(group, MOM_dom%mpp_domain, d_type)
+
+  if (present(clock)) then ; if (clock>0) call cpu_clock_end(clock) ; endif
 
 end subroutine complete_group_pass
 
-
+!> MOM_domains_init initalizes a MOM_domain_type variable, based on the information
+!! read in from a param_file_type, and optionally returns data describing various'
+!! properties of the domain type.
 subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
                             NIHALO, NJHALO, NIGLOBAL, NJGLOBAL, NIPROC, NJPROC, &
                             min_halo, domain_name, include_name, param_suffix)
-  type(MOM_domain_type),           pointer       :: MOM_dom
-  type(param_file_type),           intent(in)    :: param_file
-  logical, optional,               intent(in)    :: symmetric
-  logical, optional,               intent(in)    :: static_memory
-  integer, optional,               intent(in)    :: NIHALO, NJHALO
-  integer, optional,               intent(in)    :: NIGLOBAL, NJGLOBAL
-  integer, optional,               intent(in)    :: NIPROC, NJPROC
-  integer, dimension(2), optional, intent(inout) :: min_halo
-  character(len=*),      optional, intent(in)    :: domain_name
-  character(len=*),      optional, intent(in)    :: include_name
-  character(len=*),      optional, intent(in)    :: param_suffix
+  type(MOM_domain_type),           pointer       :: MOM_dom      !< A pointer to the MOM_domain_type
+                                                                 !! being defined here.
+  type(param_file_type),           intent(in)    :: param_file   !< A structure to parse for
+                                                                 !! run-time parameters
+  logical, optional,               intent(in)    :: symmetric    !< If present, this specifies
+                                            !! whether this domain is symmetric, regardless of
+                                            !! whether the macro SYMMETRIC_MEMORY_ is defined.
+  logical, optional,               intent(in)    :: static_memory !< If present and true, this
+                         !! domain type is set up for static memory and error checking of
+                         !! various input values is performed against those in the input file.
+  integer, optional,               intent(in)    :: NIHALO       !< Default halo sizes, required
+                                                                 !! with static memory.
+  integer, optional,               intent(in)    :: NJHALO       !< Default halo sizes, required
+                                                                 !! with static memory.
+  integer, optional,               intent(in)    :: NIGLOBAL     !< Total domain sizes, required
+                                                                 !! with static memory.
+  integer, optional,               intent(in)    :: NJGLOBAL     !< Total domain sizes, required
+                                                                 !! with static memory.
+  integer, optional,               intent(in)    :: NIPROC       !< Processor counts, required with
+                                                                 !! static memory.
+  integer, optional,               intent(in)    :: NJPROC       !< Processor counts, required with
+                                                                 !! static memory.
+  integer, dimension(2), optional, intent(inout) :: min_halo     !< If present, this sets the
+                                        !! minimum halo size for this domain in the x- and y-
+                                        !! directions, and returns the actual halo size used.
+  character(len=*),      optional, intent(in)    :: domain_name  !< A name for this domain, "MOM"
+                                                                 !! if missing.
+  character(len=*),      optional, intent(in)    :: include_name !< A name for model's include file,
+                                                                 !! "MOM_memory.h" if missing.
+  character(len=*),      optional, intent(in)    :: param_suffix !< A suffix to apply to
+                                                                 !! layout-specific parameters.
 
 
 ! Arguments: MOM_dom - A pointer to the MOM_domain_type being defined here.
@@ -1152,8 +1578,7 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
   call get_param(param_file, mdl, "THIN_HALO_UPDATES", MOM_dom%thin_halo_updates, &
                  "If true, optional arguments may be used to specify the \n"//&
                  "The width of the halos that are updated with each call.", &
-                 default=.false., layoutParam=.true.)
-            !### THIS DEFAULT SHOULD BE CHANGED TO TRUE ONCE FMS IS FIXED. -RWH
+                 default=.true., layoutParam=.true.)
 
   nihalo_dflt = 4 ; njhalo_dflt = 4
   if (present(NIHALO)) nihalo_dflt = NIHALO
@@ -1405,6 +1830,8 @@ subroutine MOM_domains_init(MOM_dom, param_file, symmetric, static_memory, &
 
 end subroutine MOM_domains_init
 
+!> clone_MD_to_MD copies one MOM_domain_type into another, while allowing
+!! some properties of the new type to differ from the original one.
 subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, &
                           domain_name)
   type(MOM_domain_type),           intent(in)    :: MD_in
@@ -1483,6 +1910,9 @@ subroutine clone_MD_to_MD(MD_in, MOM_dom, min_halo, halo_size, symmetric, &
 
 end subroutine clone_MD_to_MD
 
+!> clone_MD_to_d2D uses information from a MOM_domain_type to create a new
+!! domain2d type, while allowing some properties of the new type to differ from
+!! the original one.
 subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
                            domain_name)
   type(MOM_domain_type),           intent(in)    :: MD_in
@@ -1546,17 +1976,27 @@ subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
 
 end subroutine clone_MD_to_d2D
 
+!> get_domain_extent returns various data that has been stored in a MOM_domain_type.
 subroutine get_domain_extent(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, &
                              isg, ieg, jsg, jeg, idg_offset, jdg_offset, &
                              symmetric, local_indexing, index_offset)
-  type(MOM_domain_type), intent(in) :: Domain
-  integer, intent(out) :: isc, iec, jsc, jec
-  integer, intent(out) :: isd, ied, jsd, jed
-  integer, intent(out) :: isg, ieg, jsg, jeg
-  integer, intent(out) :: idg_offset, jdg_offset
-  logical, intent(out) :: symmetric
-  logical, optional, intent(in) :: local_indexing
-  integer, optional, intent(in) :: index_offset
+  type(MOM_domain_type), &
+           intent(in)  :: Domain
+  integer, intent(out) :: isc, iec, jsc, jec     !< The start & end indices of the computational
+                                                 !! domain.
+  integer, intent(out) :: isd, ied, jsd, jed     !< The start & end indices of the data domain.
+  integer, intent(out) :: isg, ieg, jsg, jeg     !< The start & end indices of the global domain.
+  integer, intent(out) :: idg_offset, jdg_offset !< The offset between the corresponding global and
+                                                 !! data index spaces.
+  logical, intent(out) :: symmetric              !< True if symmetric memory is used.
+  logical, optional, &
+            intent(in) :: local_indexing         !< If true, local tracer array indices start at 1,
+                                                 !! as in most MOM6 or GOLD code.
+  integer, optional, &
+            intent(in) :: index_offset           !< A fixed additional offset to all indices. This
+                                                 !! can be useful for some types of debugging with
+                                                 !! dynamic memory allocation.
+
 ! Arguments: Domain - The MOM_domain_type from which the indices are extracted.
 !  (out)     isc, iec, jsc, jec - the start & end indices of the
 !                                 computational domain.
@@ -1599,5 +2039,16 @@ subroutine get_domain_extent(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed, &
   symmetric = Domain%symmetric
 
 end subroutine get_domain_extent
+
+!> Returns the global shape of h-point arrays
+subroutine get_global_shape(domain, niglobal, njglobal)
+  type(MOM_domain_type), intent(in)  :: domain !< MOM domain
+  integer,               intent(out) :: niglobal !< i-index global size of h-point arrays
+  integer,               intent(out) :: njglobal !< j-index global size of h-point arrays
+
+  niglobal = domain%niglobal
+  njglobal = domain%njglobal
+
+end subroutine get_global_shape
 
 end module MOM_domains

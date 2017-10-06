@@ -1,24 +1,6 @@
 module MOM_dynamics_unsplit
 
-!***********************************************************************
-!*                   GNU General Public License                        *
-!* This file is a part of MOM.                                         *
-!*                                                                     *
-!* MOM is free software; you can redistribute it and/or modify it and  *
-!* are expected to follow the terms of the GNU General Public License  *
-!* as published by the Free Software Foundation; either version 2 of   *
-!* the License, or (at your option) any later version.                 *
-!*                                                                     *
-!* MOM is distributed in the hope that it will be useful, but WITHOUT  *
-!* ANY WARRANTY; without even the implied warranty of MERCHANTABILITY  *
-!* or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public    *
-!* License for more details.                                           *
-!*                                                                     *
-!* For the full text of the GNU General Public License,                *
-!* write to: Free Software Foundation, Inc.,                           *
-!*           675 Mass Ave, Cambridge, MA 02139, USA.                   *
-!* or see:   http://www.gnu.org/licenses/gpl.html                      *
-!***********************************************************************
+! This file is part of MOM6. See LICENSE.md for the license.
 
 !********+*********+*********+*********+*********+*********+*********+**
 !*                                                                     *
@@ -70,7 +52,7 @@ module MOM_dynamics_unsplit
 
 use MOM_variables, only : vertvisc_type, thermo_var_ptrs
 use MOM_variables, only : accel_diag_ptrs, ocean_internal_state, cont_diag_ptrs
-use MOM_forcing_type, only : forcing
+use MOM_forcing_type, only : mech_forcing
 use MOM_checksum_packages, only : MOM_thermo_chksum, MOM_state_chksum, MOM_accel_chksum
 use MOM_cpu_clock, only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
 use MOM_cpu_clock, only : CLOCK_COMPONENT, CLOCK_SUBCOMPONENT
@@ -93,6 +75,7 @@ use MOM_time_manager, only : time_type, set_time, time_type_to_real, operator(+)
 use MOM_time_manager, only : operator(-), operator(>), operator(*), operator(/)
 
 use MOM_ALE, only : ALE_CS
+use MOM_boundary_update, only : update_OBC_data, update_OBC_CS
 use MOM_continuity, only : continuity, continuity_init, continuity_CS
 use MOM_CoriolisAdv, only : CorAdCalc, CoriolisAdv_init, CoriolisAdv_CS
 use MOM_debugging, only : check_redundant
@@ -104,9 +87,9 @@ use MOM_lateral_mixing_coeffs, only : VarMix_CS
 use MOM_MEKE_types, only : MEKE_type
 use MOM_open_boundary, only : ocean_OBC_type
 use MOM_open_boundary, only : radiation_open_bdry_conds
-use MOM_boundary_update, only : update_OBC_data
+use MOM_open_boundary, only : open_boundary_zero_normal_flow
 use MOM_PressureForce, only : PressureForce, PressureForce_init, PressureForce_CS
-use MOM_set_visc, only : set_viscous_BBL, set_viscous_ML, set_visc_CS
+use MOM_set_visc, only : set_viscous_ML, set_visc_CS
 use MOM_tidal_forcing, only : tidal_forcing_init, tidal_forcing_CS
 use MOM_vert_friction, only : vertvisc, vertvisc_coef
 use MOM_vert_friction, only : vertvisc_limit_vel, vertvisc_init, vertvisc_CS
@@ -160,6 +143,7 @@ type, public :: MOM_dyn_unsplit_CS ; private
      ! condition type that specifies whether, where, and  what open boundary
      ! conditions are used.  If no open BCs are used, this pointer stays
      ! nullified.  Flather OBCs use open boundary_CS as well.
+  type(update_OBC_CS),    pointer :: update_OBC_CSp => NULL()
   type(tidal_forcing_CS), pointer :: tides_CSp => NULL()
 
 ! This is a copy of the pointer in the top-level control structure.
@@ -178,28 +162,50 @@ contains
 
 ! =============================================================================
 
-subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
+subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, forces, &
                   p_surf_begin, p_surf_end, uh, vh, uhtr, vhtr, eta_av, G, GV, CS, &
                   VarMix, MEKE)
-  type(ocean_grid_type),                     intent(inout) :: G
-  type(verticalGrid_type),                   intent(in)    :: GV
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(inout) :: u
-  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(inout) :: v
-  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  intent(inout) :: h
-  type(thermo_var_ptrs),                     intent(in)    :: tv
-  type(vertvisc_type),                       intent(inout) :: visc
-  type(time_type),                           intent(in)    :: Time_local
-  real,                                      intent(in)    :: dt
-  type(forcing),                             intent(in)    :: fluxes
-  real, dimension(:,:),                      pointer       :: p_surf_begin, p_surf_end
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(inout) :: uh
-  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(inout) :: vh
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(inout) :: uhtr
-  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(inout) :: vhtr
-  real, dimension(SZI_(G),SZJ_(G)),          intent(out)   :: eta_av
-  type(MOM_dyn_unsplit_CS),                  pointer       :: CS
-  type(VarMix_CS),                           pointer       :: VarMix
-  type(MEKE_type),                           pointer       :: MEKE
+  type(ocean_grid_type),            intent(inout) :: G      !< The ocean's grid structure.
+  type(verticalGrid_type),          intent(in)    :: GV     !< The ocean's vertical grid structure.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), &
+                                    intent(inout) :: u      !< The zonal velocity, in m s-1.
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
+                                    intent(inout) :: v      !< The meridional velocity, in m s-1.
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)),  &
+                                    intent(inout) :: h      !< Layer thicknesses, in H.
+                                                            !! (usually m or kg m-2).
+  type(thermo_var_ptrs),            intent(in)    :: tv     !< A structure pointing to various
+                                                            !! thermodynamic variables.
+  type(vertvisc_type),              intent(inout) :: visc   !< A structure containing vertical
+                                 !! viscosities, bottom drag viscosities, and related fields.
+  type(time_type),                  intent(in)    :: Time_local   !< The model time at the end
+                                                                  !! of the time step.
+  real,                             intent(in)    :: dt     !< The dynamics time step, in s.
+  type(mech_forcing),               intent(in)    :: forces !< A structure with the driving mechanical forces
+  real, dimension(:,:),             pointer       :: p_surf_begin !< A pointer (perhaps NULL) to the
+                                 !! surface pressure at the beginning of this dynamic step, in Pa.
+  real, dimension(:,:),             pointer       :: p_surf_end   !< A pointer (perhaps NULL) to the
+                                 !! surface pressure at the end of this dynamic step, in Pa.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), &
+                                    intent(inout) :: uh     !< The zonal volume or mass transport,
+                                                            !! in m3 s-1 or kg s-1.
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
+                                    intent(inout) :: vh     !< The meridional volume or mass
+                                                            !! transport, in m3 s-1 or kg s-1.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), &
+                                    intent(inout) :: uhtr   !< he accumulated zonal volume or mass
+                                        !! transport since the last tracer advection, in m3 or kg.
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
+                                    intent(inout) :: vhtr   !< The accumulated meridional volume or
+                                  !! mass transport since the last tracer advection, in m3 or kg.
+  real, dimension(SZI_(G),SZJ_(G)), intent(out)   :: eta_av !< The time-mean free surface height or
+                                                            !! column mass, in m or kg m-2.
+  type(MOM_dyn_unsplit_CS),         pointer       :: CS     !< The control structure set up by
+                                                            !! initialize_dyn_unsplit.
+  type(VarMix_CS),                  pointer       :: VarMix !< A pointer to a structure with fields
+                                  !! that specify the spatially variable viscosities.
+  type(MEKE_type),                  pointer       :: MEKE   !< A pointer to a structure containing
+                                  !! fields related to the Mesoscale Eddy Kinetic Energy.
 ! Arguments: u - The input and output zonal velocity, in m s-1.
 !  (inout)   v - The input and output meridional velocity, in m s-1.
 !  (inout)   h - The input and output layer thicknesses, in m or kg m-2,
@@ -251,7 +257,7 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   if (dyn_p_surf) then
     call safe_alloc_ptr(p_surf,G%isd,G%ied,G%jsd,G%jed) ; p_surf(:,:) = 0.0
   else
-    p_surf => fluxes%p_surf
+    p_surf => forces%p_surf
   endif
 
 ! Matsuno's third order accurate three step scheme is used to step
@@ -275,10 +281,8 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   call continuity(u, v, h, hp, uh, vh, dt*0.5, G, GV, CS%continuity_CSp, &
                   OBC=CS%OBC)
   call cpu_clock_end(id_clock_continuity)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_var(hp, G%Domain)
-  call pass_vector(uh, vh, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_var(hp, G%Domain, clock=id_clock_pass)
+  call pass_vector(uh, vh, G%Domain, clock=id_clock_pass)
 
   call enable_averaging(0.5*dt,Time_local-set_time(int(0.5*dt)), CS%diag)
 !   Here the first half of the thickness fluxes are offered for averaging.
@@ -307,9 +311,7 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
     enddo ; enddo
   enddo
   call cpu_clock_end(id_clock_mom_update)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_vector(u, v, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_vector(u, v, G%Domain, clock=id_clock_pass)
 
 ! CAu = -(f+zeta)/h_av vh + d/dx KE
   call cpu_clock_begin(id_clock_Cor)
@@ -327,8 +329,12 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   call cpu_clock_end(id_clock_pres)
 
   if (associated(CS%OBC)) then; if (CS%OBC%update_OBC) then
-    call update_OBC_data(CS%OBC, G, GV, tv, h, Time_local)
+    call update_OBC_data(CS%OBC, G, GV, tv, h, CS%update_OBC_CSp, Time_local)
   endif; endif
+  if (associated(CS%OBC)) then
+    call open_boundary_zero_normal_flow(CS%OBC, G, CS%PFu, CS%PFv)
+    call open_boundary_zero_normal_flow(CS%OBC, G, CS%CAu, CS%CAv)
+  endif
 
 ! up = u + dt_pred * (PFu + CAu)
   call cpu_clock_begin(id_clock_mom_update)
@@ -348,40 +354,18 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
                           CS%diffu, CS%diffv, G, GV)
   endif
 
-! visc contains viscosity and BBL thickness (u_in,h_in)
-  if (visc%calc_bbl) then
-    call enable_averaging(visc%bbl_calc_time_interval, &
-              Time_local+set_time(int(visc%bbl_calc_time_interval-dt)), CS%diag)
-    call set_viscous_BBL(u, v, h_av, tv, visc, G, GV, CS%set_visc_CSp)
-    call disable_averaging(CS%diag)
-    call cpu_clock_begin(id_clock_pass)
-    if (associated(visc%Ray_u) .and. associated(visc%Ray_v)) &
-      call pass_vector(visc%Ray_u, visc%Ray_v, G%Domain, &
-                     To_All+SCALAR_PAIR, CGRID_NE)
-    if (associated(visc%kv_bbl_u) .and. associated(visc%kv_bbl_v)) then
-      call pass_vector(visc%bbl_thick_u, visc%bbl_thick_v, G%Domain, &
-                     To_All+SCALAR_PAIR, CGRID_NE, complete=.false.)
-      call pass_vector(visc%kv_bbl_u, visc%kv_bbl_v, G%Domain, &
-                     To_All+SCALAR_PAIR, CGRID_NE)
-    endif
-    call cpu_clock_end(id_clock_pass)
-    visc%calc_bbl = .false.
-  endif
-
  ! up <- up + dt/2 d/dz visc d/dz up
   call cpu_clock_begin(id_clock_vertvisc)
   call enable_averaging(dt, Time_local, CS%diag)
-  call set_viscous_ML(u, v, h_av, tv, fluxes, visc, dt*0.5, G, GV, &
+  call set_viscous_ML(u, v, h_av, tv, forces, visc, dt*0.5, G, GV, &
                       CS%set_visc_CSp)
   call disable_averaging(CS%diag)
-  call vertvisc_coef(up, vp, h_av, fluxes, visc, dt*0.5, G, GV, &
+  call vertvisc_coef(up, vp, h_av, forces, visc, dt*0.5, G, GV, &
                      CS%vertvisc_CSp, CS%OBC)
-  call vertvisc(up, vp, h_av, fluxes, visc, dt*0.5, CS%OBC, CS%ADp, CS%CDp, &
+  call vertvisc(up, vp, h_av, forces, visc, dt*0.5, CS%OBC, CS%ADp, CS%CDp, &
                 G, GV, CS%vertvisc_CSp)
   call cpu_clock_end(id_clock_vertvisc)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_vector(up, vp, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_vector(up, vp, G%Domain, clock=id_clock_pass)
 
 ! uh = up * hp
 ! h_av = hp + dt/2 div . uh
@@ -389,10 +373,8 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   call continuity(up, vp, hp, h_av, uh, vh, &
                   (0.5*dt), G, GV, CS%continuity_CSp, OBC=CS%OBC)
   call cpu_clock_end(id_clock_continuity)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_var(h_av, G%Domain)
-  call pass_vector(uh, vh, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_var(h_av, G%Domain, clock=id_clock_pass)
+  call pass_vector(uh, vh, G%Domain, clock=id_clock_pass)
 
 ! h_av <- (hp + h_av)/2
   do k=1,nz ; do j=js-2,je+2 ; do i=is-2,ie+2
@@ -415,8 +397,12 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   call cpu_clock_end(id_clock_pres)
 
   if (associated(CS%OBC)) then; if (CS%OBC%update_OBC) then
-    call update_OBC_data(CS%OBC, G, GV, tv, h, Time_local)
+    call update_OBC_data(CS%OBC, G, GV, tv, h, CS%update_OBC_CSp, Time_local)
   endif; endif
+  if (associated(CS%OBC)) then
+    call open_boundary_zero_normal_flow(CS%OBC, G, CS%PFu, CS%PFv)
+    call open_boundary_zero_normal_flow(CS%OBC, G, CS%CAu, CS%CAv)
+  endif
 
 ! upp = u + dt/2 * ( PFu + CAu )
   call cpu_clock_begin(id_clock_mom_update)
@@ -438,14 +424,12 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
 
 ! upp <- upp + dt/2 d/dz visc d/dz upp
   call cpu_clock_begin(id_clock_vertvisc)
-  call vertvisc_coef(upp, vpp, hp, fluxes, visc, dt*0.5, G, GV, &
+  call vertvisc_coef(upp, vpp, hp, forces, visc, dt*0.5, G, GV, &
                      CS%vertvisc_CSp, CS%OBC)
-  call vertvisc(upp, vpp, hp, fluxes, visc, dt*0.5, CS%OBC, CS%ADp, CS%CDp, &
+  call vertvisc(upp, vpp, hp, forces, visc, dt*0.5, CS%OBC, CS%ADp, CS%CDp, &
                 G, GV, CS%vertvisc_CSp)
   call cpu_clock_end(id_clock_vertvisc)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_vector(upp, vpp, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_vector(upp, vpp, G%Domain, clock=id_clock_pass)
 
 ! uh = upp * hp
 ! h = hp + dt/2 div . uh
@@ -453,10 +437,8 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   call continuity(upp, vpp, hp, h, uh, vh, &
                   (dt*0.5), G, GV, CS%continuity_CSp, OBC=CS%OBC)
   call cpu_clock_end(id_clock_continuity)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_var(h, G%Domain)
-  call pass_vector(uh, vh, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_var(h, G%Domain, clock=id_clock_pass)
+  call pass_vector(uh, vh, G%Domain, clock=id_clock_pass)
   ! Whenever thickness changes let the diag manager know, target grids
   ! for vertical remapping may need to be regenerated.
   call diag_update_remap_grids(CS%diag)
@@ -494,10 +476,14 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
   call cpu_clock_end(id_clock_pres)
 
   if (associated(CS%OBC)) then; if (CS%OBC%update_OBC) then
-    call update_OBC_data(CS%OBC, G, GV, tv, h, Time_local)
+    call update_OBC_data(CS%OBC, G, GV, tv, h, CS%update_OBC_CSp, Time_local)
   endif; endif
 
 ! u = u + dt * ( PFu + CAu )
+  if (associated(CS%OBC)) then
+    call open_boundary_zero_normal_flow(CS%OBC, G, CS%PFu, CS%PFv)
+    call open_boundary_zero_normal_flow(CS%OBC, G, CS%CAu, CS%CAv)
+  endif
   do k=1,nz ; do j=js,je ; do I=Isq,Ieq
     u(I,j,k) = G%mask2dCu(I,j) * (u(I,j,k) + dt * &
             (CS%PFu(I,j,k) + CS%CAu(I,j,k)))
@@ -509,13 +495,11 @@ subroutine step_MOM_dyn_unsplit(u, v, h, tv, visc, Time_local, dt, fluxes, &
 
 ! u <- u + dt d/dz visc d/dz u
   call cpu_clock_begin(id_clock_vertvisc)
-  call vertvisc_coef(u, v, h_av, fluxes, visc, dt, G, GV, CS%vertvisc_CSp, CS%OBC)
-  call vertvisc(u, v, h_av, fluxes, visc, dt, CS%OBC, CS%ADp, CS%CDp, &
+  call vertvisc_coef(u, v, h_av, forces, visc, dt, G, GV, CS%vertvisc_CSp, CS%OBC)
+  call vertvisc(u, v, h_av, forces, visc, dt, CS%OBC, CS%ADp, CS%CDp, &
                 G, GV, CS%vertvisc_CSp, CS%taux_bot, CS%tauy_bot)
   call cpu_clock_end(id_clock_vertvisc)
-  call cpu_clock_begin(id_clock_pass)
-  call pass_vector(u, v, G%Domain)
-  call cpu_clock_end(id_clock_pass)
+  call pass_vector(u, v, G%Domain, clock=id_clock_pass)
 
   if (CS%debug) then
     call MOM_state_chksum("Corrector", u, v, h, uh, vh, G, GV)
@@ -546,11 +530,14 @@ end subroutine step_MOM_dyn_unsplit
 ! =============================================================================
 
 subroutine register_restarts_dyn_unsplit(HI, GV, param_file, CS, restart_CS)
-  type(hor_index_type),         intent(in)    :: HI
-  type(verticalGrid_type),      intent(in)    :: GV
-  type(param_file_type),        intent(in)    :: param_file
-  type(MOM_dyn_unsplit_CS),     pointer       :: CS
-  type(MOM_restart_CS),         pointer       :: restart_CS
+  type(hor_index_type),      intent(in) :: HI         !< A horizontal index type structure.
+  type(verticalGrid_type),   intent(in) :: GV         !< The ocean's vertical grid structure.
+  type(param_file_type),     intent(in) :: param_file !< A structure to parse for
+                                                      !! run-time parameters.
+  type(MOM_dyn_unsplit_CS),  pointer    :: CS         !< The control structure set up by
+                                                      !! initialize_dyn_unsplit.
+  type(MOM_restart_CS),      pointer    :: restart_CS !< A pointer to the restart control structure.
+
 !   This subroutine sets up any auxiliary restart variables that are specific
 ! to the unsplit time stepping scheme.  All variables registered here should
 ! have the ability to be recreated if they are not present in a restart file.
@@ -563,7 +550,7 @@ subroutine register_restarts_dyn_unsplit(HI, GV, param_file, CS, restart_CS)
 !  (inout)   restart_CS - A pointer to the restart control structure.
 
   type(vardesc) :: vd
-  character(len=40)  :: mod = "MOM_dynamics_unsplit" ! This module's name.
+  character(len=40)  :: mdl = "MOM_dynamics_unsplit" ! This module's name.
   character(len=48) :: thickness_units, flux_units
   integer :: isd, ied, jsd, jed, nz, IsdB, IedB, JsdB, JedB
   isd = HI%isd ; ied = HI%ied ; jsd = HI%jsd ; jed = HI%jed ; nz = GV%ke
@@ -593,26 +580,54 @@ end subroutine register_restarts_dyn_unsplit
 
 subroutine initialize_dyn_unsplit(u, v, h, Time, G, GV, param_file, diag, CS, &
                                   restart_CS, Accel_diag, Cont_diag, MIS, &
-                                  OBC, ALE_CSp, setVisc_CSp, visc, dirs, ntrunc)
-  type(ocean_grid_type),                     intent(inout) :: G
-  type(verticalGrid_type),                   intent(in)    :: GV
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), intent(inout) :: u
-  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), intent(inout) :: v
-  real, dimension(SZI_(G),SZJ_(G),SZK_(G)) , intent(inout) :: h
-  type(time_type),                   target, intent(in)    :: Time
-  type(param_file_type),                     intent(in)    :: param_file
-  type(diag_ctrl),                   target, intent(inout) :: diag
-  type(MOM_dyn_unsplit_CS),                  pointer       :: CS
-  type(MOM_restart_CS),                      pointer       :: restart_CS
-  type(accel_diag_ptrs),             target, intent(inout) :: Accel_diag
-  type(cont_diag_ptrs),              target, intent(inout) :: Cont_diag
-  type(ocean_internal_state),                intent(inout) :: MIS
-  type(ocean_OBC_type),                      pointer       :: OBC
-  type(ALE_CS),                              pointer       :: ALE_CSp
-  type(set_visc_CS),                         pointer       :: setVisc_CSp
-  type(vertvisc_type),                       intent(inout) :: visc
-  type(directories),                         intent(in)    :: dirs
-  integer, target,                           intent(inout) :: ntrunc
+                                  OBC, update_OBC_CSp, ALE_CSp, setVisc_CSp, &
+                                  visc, dirs, ntrunc)
+  type(ocean_grid_type),          intent(inout) :: G          !< The ocean's grid structure.
+  type(verticalGrid_type),        intent(in)    :: GV         !< The ocean's vertical grid
+                                                              !! structure.
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(G)), &
+                                  intent(inout) :: u          !< The zonal velocity, in m s-1.
+  real, dimension(SZI_(G),SZJB_(G),SZK_(G)), &
+                                  intent(inout) :: v          !< The meridional velocity, in m s-1.
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)) , &
+                                  intent(inout) :: h          !< Layer thicknesses, in H
+                                                              !! (usually m or kg m-2).
+  type(time_type),        target, intent(in)    :: Time       !< The current model time.
+  type(param_file_type),          intent(in)    :: param_file !< A structure to parse
+                                                              !! for run-time parameters.
+  type(diag_ctrl),        target, intent(inout) :: diag       !< A structure that is used to
+                                                              !! regulate diagnostic output.
+  type(MOM_dyn_unsplit_CS),       pointer       :: CS         !< The control structure set up
+                                                              !! by initialize_dyn_unsplit.
+  type(MOM_restart_CS),           pointer       :: restart_CS !< A pointer to the restart control
+                                                              !!structure.
+  type(accel_diag_ptrs),  target, intent(inout) :: Accel_diag !< A set of pointers to the various
+                                     !! accelerations in the momentum equations, which can be used
+                                     !! for later derived diagnostics, like energy budgets.
+  type(cont_diag_ptrs),   target, intent(inout) :: Cont_diag  !< A structure with pointers to
+                                                              !! various terms in the continuity
+                                                              !! equations.
+  type(ocean_internal_state),     intent(inout) :: MIS        !< The "MOM6 Internal State"
+                                                   !! structure, used to pass around pointers
+                                                   !! to various arrays for diagnostic purposes.
+  type(ocean_OBC_type),           pointer       :: OBC        !< If open boundary conditions are
+                                                       !! used, this points to the ocean_OBC_type
+                                                       !! that was set up in MOM_initialization.
+  type(update_OBC_CS),            pointer       :: update_OBC_CSp !< If open boundary condition
+                                                            !! updates are used, this points to
+                                                            !! the appropriate control structure.
+  type(ALE_CS),                   pointer       :: ALE_CSp    !< This points to the ALE control
+                                                              !! structure.
+  type(set_visc_CS),              pointer       :: setVisc_CSp !< This points to the set_visc
+                                                               !! control structure.
+  type(vertvisc_type),            intent(inout) :: visc       !< A structure containing vertical
+                                                              !! viscosities, bottom drag
+                                                              !! viscosities, and related fields.
+  type(directories),              intent(in)    :: dirs       !< A structure containing several
+                                                              !! relevant directory paths.
+  integer, target,                intent(inout) :: ntrunc     !< A target for the variable that
+                                                        !! records the number of times the velocity
+                                                        !! is truncated (this should be 0).
 
 ! Arguments: u - The zonal velocity, in m s-1.
 !  (inout)   v - The meridional velocity, in m s-1.
@@ -635,6 +650,8 @@ subroutine initialize_dyn_unsplit(u, v, h, Time, G, GV, param_file, diag, CS, &
 !                  pointers to various arrays for diagnostic purposes.
 !  (in)      OBC - If open boundary conditions are used, this points to the
 !                  ocean_OBC_type that was set up in MOM_initialization.
+!  (in)      update_OBC_CSp - If open boundary condition updates are used,
+!                  this points to the appropriate control structure.
 !  (in)      ALE_CS - This points to the ALE control structure.
 !  (in)      setVisc_CSp - This points to the set_visc control structure.
 !  (inout)   visc - A structure containing vertical viscosities, bottom drag
@@ -645,7 +662,7 @@ subroutine initialize_dyn_unsplit(u, v, h, Time, G, GV, param_file, diag, CS, &
 
   !   This subroutine initializes all of the variables that are used by this
   ! dynamic core, including diagnostics and the cpu clocks.
-  character(len=40) :: mod = "MOM_dynamics_unsplit" ! This module's name.
+  character(len=40) :: mdl = "MOM_dynamics_unsplit" ! This module's name.
   character(len=48) :: thickness_units, flux_units
   logical :: use_tides
   integer :: isd, ied, jsd, jed, nz, IsdB, IedB, JsdB, JedB
@@ -663,9 +680,9 @@ subroutine initialize_dyn_unsplit(u, v, h, Time, G, GV, param_file, diag, CS, &
 
   CS%diag => diag
 
-  call get_param(param_file, mod, "DEBUG", CS%debug, &
+  call get_param(param_file, mdl, "DEBUG", CS%debug, &
                  "If true, write out verbose debugging data.", default=.false.)
-  call get_param(param_file, mod, "TIDES", use_tides, &
+  call get_param(param_file, mdl, "TIDES", use_tides, &
                  "If true, apply tidal momentum forcing.", default=.false.)
 
   allocate(CS%taux_bot(IsdB:IedB,jsd:jed)) ; CS%taux_bot(:,:) = 0.0
@@ -694,6 +711,7 @@ subroutine initialize_dyn_unsplit(u, v, h, Time, G, GV, param_file, diag, CS, &
 
   if (associated(ALE_CSp)) CS%ALE_CSp => ALE_CSp
   if (associated(OBC)) CS%OBC => OBC
+  if (associated(update_OBC_CSp)) CS%update_OBC_CSp => update_OBC_CSp
 
   flux_units = get_flux_units(GV)
   CS%id_uh = register_diag_field('ocean_model', 'uh', diag%axesCuL, Time, &

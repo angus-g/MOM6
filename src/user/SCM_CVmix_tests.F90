@@ -6,7 +6,7 @@ module SCM_CVmix_tests
 
 use MOM_error_handler, only : MOM_error, FATAL
 use MOM_file_parser, only : get_param, log_version, param_file_type
-use MOM_forcing_type, only : forcing, allocate_forcing_type
+use MOM_forcing_type, only : forcing, mech_forcing
 use MOM_grid, only : ocean_grid_type
 use MOM_verticalgrid, only: verticalGrid_type
 use MOM_safe_alloc, only : safe_alloc_ptr
@@ -41,18 +41,20 @@ end type
 ! This include declares and sets the variable "version".
 #include "version_variable.h"
 
-character(len=40)  :: mod = "SCM_CVmix_tests" ! This module's name.
+character(len=40)  :: mdl = "SCM_CVmix_tests" ! This module's name.
 
 contains
 
 !> Initializes temperature and salinity for the SCM CVmix test example
-subroutine SCM_CVmix_tests_TS_init(T, S, h, G, GV, param_file)
-  real, dimension(NIMEM_,NJMEM_, NKMEM_), intent(out) :: T !< Potential tempera\ture (degC)
+subroutine SCM_CVmix_tests_TS_init(T, S, h, G, GV, param_file, just_read_params)
+  real, dimension(NIMEM_,NJMEM_, NKMEM_), intent(out) :: T !< Potential temperature (degC)
   real, dimension(NIMEM_,NJMEM_, NKMEM_), intent(out) :: S !< Salinity (psu)
   real, dimension(NIMEM_,NJMEM_, NKMEM_), intent(in)  :: h !< Layer thickness (m or Pa)
   type(ocean_grid_type),                  intent(in)  :: G !< Grid structure
   type(verticalGrid_type),                intent(in)  :: GV!< Vertical grid structure
   type(param_file_type),                  intent(in)  :: param_file !< Input parameter structure
+  logical,       optional, intent(in)  :: just_read_params !< If present and true, this call will
+                                                      !! only read parameters without changing h.
   ! Local variables
   real :: eta(SZK_(G)+1) ! The 1-d nominal positions of the interfaces.
   real :: UpperLayerTempMLD !< Upper layer Temp MLD thickness (m)
@@ -64,31 +66,36 @@ subroutine SCM_CVmix_tests_TS_init(T, S, h, G, GV, param_file)
   real :: LowerLayerdTdz !< Temp gradient in lower layer (deg C m^{-1})
   real :: LowerLayerdSdz !< Salt gradient in lower layer (PPT m^{-1})
   real :: zC, DZ
+  logical :: just_read    ! If true, just read parameters but set nothing.
   integer :: i, j, k, is, ie, js, je, isd, ied, jsd, jed, nz
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
 
 
-  call log_version(param_file, mod, version)
-  call get_param(param_file,mod,"SCM_TEMP_MLD",UpperLayerTempMLD, &
-                 'Initial temp mixed layer depth', units='m',default=0.0)
-  call get_param(param_file,mod,"SCM_SALT_MLD",UpperLayerSaltMLD, &
-                 'Initial salt mixed layer depth', units='m',default=0.0)
-  call get_param(param_file,mod,"SCM_L1_SALT",UpperLayerSalt, &
-                 'Layer 2 surface salinity', units='1e-3',default=35.0)
-  call get_param(param_file,mod,"SCM_L1_TEMP",UpperLayerTemp, &
-                 'Layer 1 surface temperature', units='C', default=20.0)
-  call get_param(param_file,mod,"SCM_L2_SALT",LowerLayerSalt, &
-                 'Layer 2 surface salinity', units='1e-3',default=35.0)
-  call get_param(param_file,mod,"SCM_L2_TEMP",LowerLayerTemp, &
-                 'Layer 2 surface temperature', units='C', default=20.0)
-  call get_param(param_file,mod,"SCM_L2_DTDZ",LowerLayerdTdZ,     &
+  just_read = .false. ; if (present(just_read_params)) just_read = just_read_params
+
+  if (.not.just_read) call log_version(param_file, mdl, version)
+  call get_param(param_file, mdl,"SCM_TEMP_MLD",UpperLayerTempMLD, &
+                 'Initial temp mixed layer depth', units='m',default=0.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_SALT_MLD",UpperLayerSaltMLD, &
+                 'Initial salt mixed layer depth', units='m',default=0.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_L1_SALT",UpperLayerSalt, &
+                 'Layer 2 surface salinity', units='1e-3',default=35.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_L1_TEMP",UpperLayerTemp, &
+                 'Layer 1 surface temperature', units='C', default=20.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_L2_SALT",LowerLayerSalt, &
+                 'Layer 2 surface salinity', units='1e-3',default=35.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_L2_TEMP",LowerLayerTemp, &
+                 'Layer 2 surface temperature', units='C', default=20.0, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_L2_DTDZ",LowerLayerdTdZ,     &
                  'Initial temperature stratification in layer 2', &
-                 units='C/m', default=0.00)
-  call get_param(param_file,mod,"SCM_L2_DSDZ",LowerLayerdSdZ,  &
+                 units='C/m', default=0.00, do_not_log=just_read)
+  call get_param(param_file, mdl,"SCM_L2_DSDZ",LowerLayerdSdZ,  &
                  'Initial salinity stratification in layer 2', &
-                 units='PPT/m', default=0.00)
+                 units='PPT/m', default=0.00, do_not_log=just_read)
+
+  if (just_read) return ! All run-time parameters have been read, so return.
 
   do j=js,je ; do i=is,ie
     eta(1) = 0. ! Reference to surface
@@ -130,47 +137,47 @@ subroutine SCM_CVmix_tests_surface_forcing_init(Time, G, param_file, CS)
   allocate(CS)
 
   ! Read all relevant parameters and write them to the model log.
-  call log_version(param_file, mod, version, "")
-  call get_param(param_file, mod, "SCM_USE_WIND_STRESS",              &
+  call log_version(param_file, mdl, version, "")
+  call get_param(param_file, mdl, "SCM_USE_WIND_STRESS",              &
                  CS%UseWindStress, "Wind Stress switch "//            &
                  "used in the SCM CVmix surface forcing.",            &
                  units='', default=.false.)
-  call get_param(param_file, mod, "SCM_USE_HEAT_FLUX",                &
+  call get_param(param_file, mdl, "SCM_USE_HEAT_FLUX",                &
                  CS%UseHeatFlux, "Heat flux switch "//                &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='', default=.false.)
-  call get_param(param_file, mod, "SCM_USE_EVAPORATION",              &
+  call get_param(param_file, mdl, "SCM_USE_EVAPORATION",              &
                  CS%UseEvaporation, "Evaporation switch "//           &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='', default=.false.)
-  call get_param(param_file, mod, "SCM_USE_DIURNAL_SW",               &
+  call get_param(param_file, mdl, "SCM_USE_DIURNAL_SW",               &
                  CS%UseDiurnalSW, "Diurnal sw radation switch "//     &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='', default=.false.)
   if (CS%UseWindStress) then
-    call get_param(param_file, mod, "SCM_TAU_X",                      &
+    call get_param(param_file, mdl, "SCM_TAU_X",                      &
                  CS%tau_x, "Constant X-dir wind stress "//            &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='N/m2', fail_if_missing=.true.)
-    call get_param(param_file, mod, "SCM_TAU_Y",                      &
+    call get_param(param_file, mdl, "SCM_TAU_Y",                      &
                  CS%tau_y, "Constant y-dir wind stress "//            &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='N/m2', fail_if_missing=.true.)
   endif
   if (CS%UseHeatFlux) then
-    call get_param(param_file, mod, "SCM_HEAT_FLUX",                  &
+    call get_param(param_file, mdl, "SCM_HEAT_FLUX",                  &
                  CS%surf_HF, "Constant surface heat flux "//          &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='m K/s', fail_if_missing=.true.)
   endif
   if (CS%UseEvaporation) then
-    call get_param(param_file, mod, "SCM_EVAPORATION",                &
+    call get_param(param_file, mdl, "SCM_EVAPORATION",                &
                  CS%surf_evap, "Constant surface evaporation "//      &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='m/s', fail_if_missing=.true.)
   endif
   if (CS%UseDiurnalSW) then
-    call get_param(param_file, mod, "SCM_DIURNAL_SW_MAX",             &
+    call get_param(param_file, mdl, "SCM_DIURNAL_SW_MAX",             &
                  CS%Max_sw, "Maximum diurnal sw radiation "//         &
                  "used in the SCM CVmix test surface forcing.",       &
                  units='m K/s', fail_if_missing=.true.)
@@ -178,9 +185,9 @@ subroutine SCM_CVmix_tests_surface_forcing_init(Time, G, param_file, CS)
 
 end subroutine SCM_CVmix_tests_surface_forcing_init
 
-subroutine SCM_CVmix_tests_wind_forcing(state, fluxes, day, G, CS)
+subroutine SCM_CVmix_tests_wind_forcing(state, forces, day, G, CS)
   type(surface),                    intent(in)    :: state  !< Surface state structure
-  type(forcing),                    intent(inout) :: fluxes !< Surface fluxes structure
+  type(mech_forcing),               intent(inout) :: forces !< A structure with the driving mechanical forces
   type(time_type),                  intent(in)    :: day    !< Time in days
   type(ocean_grid_type),            intent(inout) :: G      !< Grid structure
   type(SCM_CVmix_tests_CS), pointer       :: CS     !< Container for SCM parameters
@@ -194,18 +201,15 @@ subroutine SCM_CVmix_tests_wind_forcing(state, fluxes, day, G, CS)
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
-  ! Allocate the forcing arrays, if necessary.
-  call allocate_forcing_type(G, fluxes, stress=.true., ustar=.true. )
-
   do j=js,je ; do I=Isq,Ieq
-    fluxes%taux(I,j) = CS%tau_x
+    forces%taux(I,j) = CS%tau_x
   enddo ; enddo
   do J=Jsq,Jeq ; do i=is,ie
-    fluxes%tauy(i,J) = CS%tau_y
+    forces%tauy(i,J) = CS%tau_y
   enddo ; enddo
   mag_tau = sqrt(CS%tau_x*CS%tau_x + CS%tau_y*CS%tau_y)
-  if (associated(fluxes%ustar)) then ; do j=js,je ; do i=is,ie
-    fluxes%ustar(i,j) = sqrt(  mag_tau / CS%Rho0 )
+  if (associated(forces%ustar)) then ; do j=js,je ; do i=is,ie
+    forces%ustar(i,j) = sqrt(  mag_tau / CS%Rho0 )
   enddo ; enddo ; endif
 
 end subroutine SCM_CVmix_tests_wind_forcing
@@ -230,9 +234,6 @@ subroutine SCM_CVmix_tests_buoyancy_forcing(state, fluxes, day, G, CS)
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
-
-  ! Allocate the forcing arrays, if necessary.
-  call allocate_forcing_type(G, fluxes, water=.true., heat=.true. )
 
   if (CS%UseHeatFlux) then
     ! Note CVmix test inputs give Heat flux in [m K/s]
