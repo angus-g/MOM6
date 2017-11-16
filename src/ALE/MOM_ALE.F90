@@ -45,6 +45,8 @@ use MOM_tracer_registry,  only : tracer_registry_type, tracer_type, MOM_tracer_c
 use MOM_variables,        only : ocean_grid_type, thermo_var_ptrs
 use MOM_verticalGrid,     only : get_thickness_units, verticalGrid_type
 
+use coord_adapt, only : adapt_diag_CS
+
 use regrid_defs,          only : PRESSURE_RECONSTRUCTION_PLM
 !use regrid_consts,       only : coordinateMode, DEFAULT_COORDINATE_MODE
 use regrid_consts,        only : coordinateUnits, coordinateMode, state_dependent
@@ -93,6 +95,8 @@ type, public :: ALE_CS
   logical :: remap_after_initialization !<   Indicates whether to regrid/remap after initializing the state.
 
   logical :: show_call_tree !< For debugging
+
+  integer :: ale_iterations
 
   ! for diagnostics
   type(diag_ctrl), pointer           :: diag                          !< structure to regulate output
@@ -263,6 +267,9 @@ subroutine ALE_init( param_file, GV, max_depth, CS)
                  "code.", default=.true., do_not_log=.true.)
   call set_regrid_params(CS%regridCS, integrate_downward_for_e=.not.local_logical)
 
+  call get_param(param_file, mdl, "ALE_ITERATIONS", CS%ale_iterations, &
+       "Number of times to perform regridding/remapping", default=1)
+
   ! Keep a record of values for subsequent queries
   CS%nk = GV%ke
 
@@ -333,7 +340,7 @@ end subroutine ALE_end
 !! the old grid and the new grid. The creation of the new grid can be based
 !! on z coordinates, target interface densities, sigma coordinates or any
 !! arbitrary coordinate system.
-subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h)
+subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h, diag_CS)
   type(ocean_grid_type),                      intent(in)    :: G   !< Ocean grid informations
   type(verticalGrid_type),                    intent(in)    :: GV  !< Ocean vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: h   !< Current 3D grid obtained after last time step (m or Pa)
@@ -344,6 +351,7 @@ subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h)
   type(ALE_CS),                               pointer       :: CS  !< Regridding parameters and options
   real,                             optional, intent(in)    :: dt  !< Time step between calls to ALE_main()
   real, dimension(:,:),             optional, pointer       :: frac_shelf_h !< Fractional ice shelf coverage
+  type(adapt_diag_CS), optional, intent(inout) :: diag_CS
   ! Local variables
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dzRegrid ! The change in grid interface positions
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: eta_preale
@@ -376,26 +384,35 @@ subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h)
   endif
   dzRegrid(:,:,:) = 0.0
 
-  ! Build new grid. The new grid is stored in h_new. The old grid is h.
-  ! Both are needed for the subsequent remapping of variables.
-  if (ice_shelf) then
-     call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid, frac_shelf_h)
+  if (CS%ale_iterations > 1) then
+    call ALE_regrid_accelerated(CS, G, GV, h, tv, CS%ale_iterations, u, v, Reg, dt, dzRegrid)
+    ! copy these from below, because we don't want to duplicate the call to remap_all_state_vars
+    call check_grid( G, GV, h, 0. )
+    if (present(dt)) then
+      call diag_update_remap_grids(CS%diag, alt_h = h_new)
+    endif
   else
-     call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid)
-  endif
+    ! Build new grid. The new grid is stored in h_new. The old grid is h.
+    ! Both are needed for the subsequent remapping of variables.
+    if (ice_shelf) then
+      call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid, frac_shelf_h)
+    else
+      call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid, dt=dt, diag_CS=diag_CS)
+    endif
 
-  call check_grid( G, GV, h, 0. )
+    call check_grid( G, GV, h, 0. )
 
-  if (CS%show_call_tree) call callTree_waypoint("new grid generated (ALE_main)")
+    if (CS%show_call_tree) call callTree_waypoint("new grid generated (ALE_main)")
 
-  ! The presence of dt is used for expediency to distinguish whether ALE_main is being called during init
-  ! or in the main loop. Tendency diagnostics in remap_all_state_vars also rely on this logic.
-  if (present(dt)) then
-    call diag_update_remap_grids(CS%diag, alt_h = h_new)
-  endif
-  ! Remap all variables from old grid h onto new grid h_new
-  call remap_all_state_vars( CS%remapCS, CS, G, GV, h, h_new, Reg, -dzRegrid, &
-                             u, v, CS%show_call_tree, dt )
+    ! The presence of dt is used for expediency to distinguish whether ALE_main is being called during init
+    ! or in the main loop. Tendency diagnostics in remap_all_state_vars also rely on this logic.
+    if (present(dt)) then
+      call diag_update_remap_grids(CS%diag, alt_h = h_new)
+    endif
+    ! Remap all variables from old grid h onto new grid h_new
+    call remap_all_state_vars( CS%remapCS, CS, G, GV, h, h_new, Reg, -dzRegrid, &
+         u, v, CS%show_call_tree, dt )
+  end if
 
   if (CS%show_call_tree) call callTree_waypoint("state remapped (ALE_main)")
 
@@ -664,23 +681,26 @@ end subroutine ALE_build_grid
 
 !> For a state-based coordinate, accelerate the process of regridding by
 !! repeatedly applying the grid calculation algorithm
-subroutine ALE_regrid_accelerated(CS, G, GV, h_orig, tv, n, h_new, u, v)
-  type(ALE_CS),                               intent(in)    :: CS     !< ALE control structure
-  type(ocean_grid_type),                      intent(inout) :: G      !< Ocean grid
+subroutine ALE_regrid_accelerated(CS, G, GV, h, tv, n, u, v, Reg, dt, dzRegrid, initial)
+  type(ALE_CS),                               pointer    :: CS     !< ALE control structure
+  type(ocean_grid_type),                      intent(in) :: G      !< Ocean grid
   type(verticalGrid_type),                    intent(in)    :: GV     !< Vertical grid
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(in)    :: h_orig !< Original thicknesses
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: h !< Original thicknesses
   type(thermo_var_ptrs),                      intent(inout) :: tv     !< Thermo vars (T/S/EOS)
   integer,                                    intent(in)    :: n      !< Number of times to regrid
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(out)   :: h_new  !< Thicknesses after regridding
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(inout) :: u      !< Zonal velocity
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(inout) :: v      !< Meridional velocity
+  type(tracer_registry_type), pointer :: Reg
+  real, intent(in), optional :: dt
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(inout), optional :: dzRegrid
+  logical, intent(in), optional :: initial
 
   ! Local variables
   integer :: i, j, k, nz
   type(thermo_var_ptrs) :: tv_local ! local/intermediate temp/salt
   type(group_pass_type) :: pass_T_S_h ! group pass if the coordinate has a stencil
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))         :: h ! A working copy of layer thickesses
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), target :: T, S ! temporary state
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV))         :: h_loc, h_orig ! A working copy of layer thickesses
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), target :: T, S ! local temporary state
   ! we have to keep track of the total dzInterface if for some reason
   ! we're using the old remapping algorithm for u/v
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dzInterface, dzIntTotal
@@ -700,7 +720,7 @@ subroutine ALE_regrid_accelerated(CS, G, GV, h_orig, tv, n, h_new, u, v)
 
   call create_group_pass(pass_T_S_h, T, G%domain)
   call create_group_pass(pass_T_S_h, S, G%domain)
-  call create_group_pass(pass_T_S_h, h, G%domain)
+  call create_group_pass(pass_T_S_h, h_loc, G%domain)
 
   ! copy original temp/salt and set our local tv_pointers to them
   tv_local = tv
@@ -709,36 +729,44 @@ subroutine ALE_regrid_accelerated(CS, G, GV, h_orig, tv, n, h_new, u, v)
   tv_local%T => T
   tv_local%S => S
 
-  ! get local copy of thickness
-  h(:,:,:) = h_orig(:,:,:)
+  ! get local copy of thickness and save original state for remapping
+  h_loc(:,:,:) = h(:,:,:)
+  h_orig(:,:,:) = h(:,:,:)
+
+  ! XXX this might be wrong
+  if (present(dt)) &
+       call ALE_update_regrid_weights(dt / n, CS)
 
   do k = 1, n
     call do_group_pass(pass_T_S_h, G%domain)
 
     ! generate new grid
-    call regridding_main(CS%remapCS, CS%regridCS, G, GV, h, tv_local, h_new, dzInterface)
+    call regridding_main(CS%remapCS, CS%regridCS, G, GV, h_loc, tv_local, h, dzInterface, dt=dt)
     dzIntTotal(:,:,:) = dzIntTotal(:,:,:) + dzInterface(:,:,:)
 
     ! remap from original grid onto new grid
-    ! we need to use remapping_core because there isn't a tracer registry set up in
-    ! the state initialization routine
-    do j = G%jsc,G%jec ; do i = G%isc,G%iec
-      call remapping_core_h(CS%remapCS, nz, h_orig(i,j,:), tv%S(i,j,:), nz, h_new(i,j,:), &
+    do j = G%jsc-1,G%jec+1 ; do i = G%isc-1,G%iec+1
+      call remapping_core_h(CS%remapCS, nz, h_orig(i,j,:), tv%S(i,j,:), nz, h(i,j,:), &
                             tv_local%S(i,j,:), h_neglect, h_neglect_edge)
-      call remapping_core_h(CS%remapCS, nz, h_orig(i,j,:), tv%T(i,j,:), nz, h_new(i,j,:), &
+      call remapping_core_h(CS%remapCS, nz, h_orig(i,j,:), tv%T(i,j,:), nz, h(i,j,:), &
                             tv_local%T(i,j,:), h_neglect, h_neglect_edge)
     enddo ; enddo
 
-
-    h(:,:,:) = h_new(:,:,:)
+    ! starting grid for next iteration
+    h_loc(:,:,:) = h(:,:,:)
   enddo
 
   ! save the final temp/salt
-  tv%S(:,:,:) = S(:,:,:)
-  tv%T(:,:,:) = T(:,:,:)
 
-  ! remap velocities
-  call remap_all_state_vars(CS%remapCS, CS, G, GV, h_orig, h_new, null(), dzIntTotal, u, v)
+  ! remap velocities if we need to
+  if (.not. (present(initial) .and. initial)) then
+    call remap_all_state_vars(CS%remapCS, CS, G, GV, h_orig, h, Reg, dzIntTotal, u, v, dt=dt)
+  else
+    call remap_all_state_vars(CS%remapCS, CS, G, GV, h_orig, h, Reg, dzIntTotal, u, v)
+  endif
+
+  ! save total dzregrid for diags if needed
+  if (present(dzRegrid)) dzRegrid(:,:,:) = dzIntTotal(:,:,:)
 end subroutine ALE_regrid_accelerated
 
 !> This routine takes care of remapping all variable between the old and the

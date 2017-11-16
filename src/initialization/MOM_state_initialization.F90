@@ -176,6 +176,8 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, PF, dirs, &
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB
 
+  real :: dt
+
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
   Isq = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
@@ -451,6 +453,16 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, PF, dirs, &
   if (depress_sfc) call depress_surface(h, G, GV, PF, tv, just_read_params=just_read)
   if (trim_ic_for_p_surf) call trim_for_ice(PF, G, GV, ALE_CSp, tv, h, just_read_params=just_read)
 
+  ! This is the end of the block of code that might have initialized fields
+  ! internally at the start of a new run.
+  if (.not.new_sim) then ! This block restores the state from a restart file.
+    !    This line calls a subroutine that reads the initial conditions  !
+    !  from a previously generated file.                                 !
+    call restore_state(dirs%input_filename, dirs%restart_input_dir, Time, &
+                       G, restart_CS)
+    if (present(Time_in)) Time = Time_in
+  endif
+
   ! Perhaps we want to run the regridding coordinate generator for multiple
   ! iterations here so the initial grid is consistent with the coordinate
   if (useALE) then
@@ -458,26 +470,18 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, PF, dirs, &
          "If true, runs REGRID_ACCELERATE_ITERATIONS iterations of the regridding\n"//&
          "algorithm to push the initial grid to be consistent with the initial\n"//&
          "condition. Useful only for state-based and iterative coordinates.", &
-         default=.false., do_not_log=just_read)
+         default=.false.)
+
     if (regrid_accelerate) then
       call get_param(PF, mdl, "REGRID_ACCELERATE_ITERATIONS", regrid_iterations, &
            "The number of regridding iterations to perform to generate\n"//&
            "an initial grid that is consistent with the initial conditions.", &
-           default=1, do_not_log=just_read)
+           default=1)
 
-      if (new_sim) &
-        call ALE_regrid_accelerated(ALE_CSp, G, GV, h, tv, regrid_iterations, h, u, v)
+      call get_param(PF, mdl, "DT", dt, "Timestep", fail_if_missing=.true., do_not_log=just_read)
+
+      call ALE_regrid_accelerated(ALE_CSp, G, GV, h, tv, regrid_iterations, u, v, tracer_Reg, dt=dt, initial=.true.)
     endif
-  endif
-  ! This is the end of the block of code that might have initialized fields
-  ! internally at the start of a new run.
-
-  if (.not.new_sim) then ! This block restores the state from a restart file.
-    !    This line calls a subroutine that reads the initial conditions  !
-    !  from a previously generated file.                                 !
-    call restore_state(dirs%input_filename, dirs%restart_input_dir, Time, &
-                       G, restart_CS)
-    if (present(Time_in)) Time = Time_in
   endif
 
   if ( use_temperature ) then

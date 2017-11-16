@@ -15,6 +15,7 @@ use MOM_EOS, only : calculate_density, calculate_density_derivs, EOS_type
 use regrid_consts, only : coordinateMode, DEFAULT_COORDINATE_MODE
 use regrid_consts, only : REGRIDDING_LAYER, REGRIDDING_ZSTAR
 use regrid_consts, only : REGRIDDING_RHO, REGRIDDING_SIGMA
+use regrid_consts, only : REGRIDDING_ADAPTIVE
 
 implicit none ; private
 
@@ -167,7 +168,7 @@ subroutine adjustment_initialize_thickness ( h, G, GV, param_file, just_read_par
         enddo
       enddo ; enddo
 
-    case ( REGRIDDING_ZSTAR, REGRIDDING_SIGMA )
+    case ( REGRIDDING_ZSTAR, REGRIDDING_SIGMA, REGRIDDING_ADAPTIVE )
       do k=1,nz+1
         eta1D(k) = -(G%max_depth) * (real(k-1) / real(nz))
         eta1D(k) = max(min(eta1D(k),0.),-G%max_depth)
@@ -254,7 +255,7 @@ subroutine adjustment_initialize_temperature_salinity ( T, S, h, G, GV, param_fi
   ! Linear salinity profile
   select case ( coordinateMode(verticalCoordinate) )
 
-    case ( REGRIDDING_ZSTAR, REGRIDDING_SIGMA )
+    case ( REGRIDDING_ZSTAR, REGRIDDING_SIGMA, REGRIDDING_ADAPTIVE )
       dSdz = -delta_S_strat/G%max_depth
       do j=js,je ; do i=is,ie
         eta1d(nz+1) = -G%bathyT(i,j)

@@ -47,6 +47,7 @@ use MOM_unit_tests,           only : unit_tests
 use coupler_types_mod,        only : coupler_type_send_data, coupler_1d_bc_type, coupler_type_spawn
 
 ! MOM core modules
+use coord_adapt, only : adapt_diag_CS
 use MOM_ALE,                   only : ALE_init, ALE_end, ALE_main, ALE_CS, adjustGridForIntegrity
 use MOM_ALE,                   only : ALE_getCoordinate, ALE_getCoordinateUnits, ALE_writeCoordinateFile
 use MOM_ALE,                   only : ALE_updateVerticalGridType, ALE_remap_init_conds, ALE_register_diags
@@ -140,6 +141,16 @@ type MOM_diag_IDs
   integer :: id_u  = -1, id_v  = -1, id_h  = -1
   ! 2-d state field
   integer :: id_ssh_inst = -1
+  ! adaptive coordinate debugging
+  integer :: id_adapt_dens_weight_u = -1
+  integer :: id_adapt_dens_weight_v = -1
+  integer :: id_adapt_pres_weight_u = -1
+  integer :: id_adapt_pres_weight_v = -1
+
+  integer :: id_adapt_slope_u = -1
+  integer :: id_adapt_slope_v = -1
+  integer :: id_adapt_denom_u = -1
+  integer :: id_adapt_denom_v = -1
 end type MOM_diag_IDs
 
 !> Structure describing the state of the ocean.
@@ -295,6 +306,7 @@ type, public :: MOM_control_struct ; private
   type(MOM_diag_IDs) :: IDs
   type(transport_diag_IDs) :: transport_IDs
   type(surface_diag_IDs) :: sfc_IDs
+
 
   ! The remainder of this type provides pointers to child module control structures.
 
@@ -1068,12 +1080,19 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
   type(time_type),          intent(in)    :: Time_end_thermo !< End of averaging interval for thermo diags
   logical,                  intent(in)    :: update_BBL !< If true, calculate the bottom boundary layer properties.
 
+
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), target :: dens_weight_u, pres_weight_u, &
+       slope_u, denom_u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), target :: dens_weight_v, pres_weight_v, &
+       slope_v, denom_v
+
+  integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
   logical :: use_ice_shelf ! Needed for selecting the right ALE interface.
   logical :: showCallTree
   type(group_pass_type) :: pass_T_S, pass_T_S_h, pass_uv_T_S_h
   integer :: dynamics_stencil  ! The computational stencil for the calculations
                                ! in the dynamic core.
-  integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
+  type(adapt_diag_CS) :: diag_CS
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
   showCallTree = callTree_showQuery()
@@ -1123,11 +1142,21 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
       call enable_averaging(dtdia, Time_end_thermo, CS%diag)
 !         call pass_vector(u, v, G%Domain)
       if (associated(tv%T)) &
-        call create_group_pass(pass_T_S_h, tv%T, G%Domain, To_All+Omit_Corners, halo=1)
+        call create_group_pass(pass_T_S_h, tv%T, G%Domain, To_All+Omit_Corners, halo=2)
       if (associated(tv%S)) &
-        call create_group_pass(pass_T_S_h, tv%S, G%Domain, To_All+Omit_Corners, halo=1)
-      call create_group_pass(pass_T_S_h, h, G%Domain, To_All+Omit_Corners, halo=1)
+        call create_group_pass(pass_T_S_h, tv%S, G%Domain, To_All+Omit_Corners, halo=2)
+      call create_group_pass(pass_T_S_h, h, G%Domain, To_All+Omit_Corners, halo=2)
       call do_group_pass(pass_T_S_h, G%Domain)
+
+      if (CS%IDs%id_adapt_dens_weight_u > 0) diag_CS%dens_weight_u => dens_weight_u
+      if (CS%IDs%id_adapt_dens_weight_v > 0) diag_CS%dens_weight_v => dens_weight_v
+      if (CS%IDs%id_adapt_pres_weight_u > 0) diag_CS%pres_weight_u => pres_weight_u
+      if (CS%IDs%id_adapt_pres_weight_v > 0) diag_CS%pres_weight_v => pres_weight_v
+
+      if (CS%IDs%id_adapt_slope_u > 0) diag_CS%slope_u => slope_u
+      if (CS%IDs%id_adapt_slope_v > 0) diag_CS%slope_v => slope_v
+      if (CS%IDs%id_adapt_denom_u > 0) diag_CS%denom_u => denom_u
+      if (CS%IDs%id_adapt_denom_v > 0) diag_CS%denom_v => denom_v
 
       call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
 
@@ -1142,8 +1171,18 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
         call ALE_main(G, GV, h, u, v, tv, CS%tracer_Reg, CS%ALE_CSp, dtdia, &
                       fluxes%frac_shelf_h)
       else
-        call ALE_main(G, GV, h, u, v, tv, CS%tracer_Reg, CS%ALE_CSp, dtdia)
+        call ALE_main(G, GV, h, u, v, tv, CS%tracer_Reg, CS%ALE_CSp, dtdia, diag_CS=diag_CS)
       endif
+
+      if (CS%IDs%id_adapt_dens_weight_u > 0) call post_data(CS%IDs%id_adapt_dens_weight_u, dens_weight_u, CS%diag)
+      if (CS%IDs%id_adapt_dens_weight_v > 0) call post_data(CS%IDs%id_adapt_dens_weight_v, dens_weight_v, CS%diag)
+      if (CS%IDs%id_adapt_pres_weight_u > 0) call post_data(CS%IDs%id_adapt_pres_weight_u, pres_weight_u, CS%diag)
+      if (CS%IDs%id_adapt_pres_weight_v > 0) call post_data(CS%IDs%id_adapt_pres_weight_v, pres_weight_v, CS%diag)
+
+      if (CS%IDs%id_adapt_slope_u > 0) call post_data(CS%IDs%id_adapt_slope_u, slope_u, CS%diag)
+      if (CS%IDs%id_adapt_slope_v > 0) call post_data(CS%IDs%id_adapt_slope_v, slope_v, CS%diag)
+      if (CS%IDs%id_adapt_denom_u > 0) call post_data(CS%IDs%id_adapt_denom_u, denom_u, CS%diag)
+      if (CS%IDs%id_adapt_denom_v > 0) call post_data(CS%IDs%id_adapt_denom_v, denom_v, CS%diag)
 
       if (showCallTree) call callTree_waypoint("finished ALE_main (step_MOM_thermo)")
       call cpu_clock_end(id_clock_ALE)
@@ -1467,6 +1506,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, MS, CS, restart_CSp
   logical :: use_EOS           ! If true, density calculated from T & S using an equation of state.
   logical :: symmetric         ! If true, use symmetric memory allocation.
   logical :: save_IC           ! If true, save the initial conditions.
+  logical :: force_IC ! if true, force writing the initial conditions, even if started from a restart
   logical :: do_unit_tests     ! If true, call unit tests.
   logical :: test_grid_copy = .false.
 
@@ -1787,6 +1827,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, MS, CS, restart_CSp
   call get_param(param_file, "MOM", "SAVE_INITIAL_CONDS", save_IC, &
                  "If true, write the initial conditions to a file given \n"//&
                  "by IC_OUTPUT_FILE.", default=.false.)
+  call get_param(param_file, "MOM", "FORCE_SAVE_IC", force_IC, &
+                 "If true, write the initial conditions even if running\n"//&
+                 "from a restart file.", default=.false.)
   call get_param(param_file, "MOM", "IC_OUTPUT_FILE", CS%IC_file, &
                  "The file into which to write the initial conditions.", &
                  default="MOM_IC")
@@ -2343,8 +2386,9 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, MS, CS, restart_CSp
 
   ! Flag whether to save initial conditions in finish_MOM_initialization() or not.
   CS%write_IC = save_IC .and. &
-                .not.((dirs%input_filename(1:1) == 'r') .and. &
-                      (LEN_TRIM(dirs%input_filename) == 1))
+       (force_IC .or. &
+       .not.((dirs%input_filename(1:1) == 'r') .and. &
+       (LEN_TRIM(dirs%input_filename) == 1)))
 
   call callTree_leave("initialize_MOM()")
   call cpu_clock_end(id_clock_init)
@@ -2425,7 +2469,26 @@ subroutine register_diags(Time, G, GV, IDs, diag, missing)
       'Layer Thickness after the dynamics update', thickness_units, &
       v_extensive=.true., conversion=H_convert)
   IDs%id_ssh_inst = register_diag_field('ocean_model', 'SSH_inst', diag%axesT1, &
-      Time, 'Instantaneous Sea Surface Height', 'm', missing)
+       Time, 'Instantaneous Sea Surface Height', 'm', missing)
+
+  IDs%id_adapt_dens_weight_u = register_diag_field('ocean_model', 'adapt_dens_weight_u', diag%axesCui, Time, &
+       'Adaptive coordinate density term weighting on u-points')
+  IDs%id_adapt_dens_weight_v = register_diag_field('ocean_model', 'adapt_dens_weight_v', diag%axesCvi, Time, &
+       'Adaptive coordinate density term weighting on v-points')
+  IDs%id_adapt_pres_weight_u = register_diag_field('ocean_model', 'adapt_pres_weight_u', diag%axesCui, Time, &
+       'Adaptive coordinate pressure term weighting on u-points')
+  IDs%id_adapt_pres_weight_v = register_diag_field('ocean_model', 'adapt_pres_weight_v', diag%axesCvi, Time, &
+       'Adaptive coordinate pressure term weighting on v-points')
+
+  IDs%id_adapt_slope_u = register_diag_field('ocean_model', 'adapt_slope_u', diag%axesCui, Time, &
+       'Adaptive coordinate slope on u-points')
+  IDs%id_adapt_slope_v = register_diag_field('ocean_model', 'adapt_slope_v', diag%axesCvi, Time, &
+       'Adaptive coordinate slope on v-points')
+  IDs%id_adapt_denom_u = register_diag_field('ocean_model', 'adapt_denom_u', diag%axesCui, Time, &
+       'Adaptive coordinate denom on u-points')
+  IDs%id_adapt_denom_v = register_diag_field('ocean_model', 'adapt_denom_v', diag%axesCvi, Time, &
+       'Adaptive coordinate denom on v-points')
+
 end subroutine register_diags
 
 !> This subroutine sets up clock IDs for timing various subroutines.
