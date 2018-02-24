@@ -547,6 +547,12 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
 
     call set_regrid_params(CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
          adaptKappa=adaptKappa, adaptTau=adaptTau, adaptMean=tmpLogical)
+
+    call get_param(param_file, mod, "ADAPT_TWIN_GRADIENT", tmpLogical, &
+         "Use twin gradient approach, requiring sign of gradient above\n"//&
+         "and below an interface to agree, avoiding a vertical null mode.", &
+         default=.true.)
+    call set_regrid_params(CS, adaptTwin=tmpLogical)
   endif
 
   if (main_parameters .and. coord_is_state_dependent) then
@@ -2560,7 +2566,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              compress_fraction, dz_min_surface, nz_fixed_surface, Rho_ML_avg_depth, &
              nlay_ML_to_interior, fix_haloclines, halocline_filt_len, &
              halocline_strat_tol, integrate_downward_for_e, &
-             adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau, adaptMean)
+             adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau, adaptMean, adaptTwin)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2578,7 +2584,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
   real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau
-  logical, optional, intent(in) :: adaptMean
+  logical, optional, intent(in) :: adaptMean, adaptTwin
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
   if (present(boundary_extrapolation)) call set_interp_extrap(CS%interp_CS, boundary_extrapolation)
@@ -2629,7 +2635,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptKappa=adaptKappa, adaptTau=adaptTau, adaptMean=adaptMean)
+         adaptKappa=adaptKappa, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin)
   end select
 
 end subroutine set_regrid_params

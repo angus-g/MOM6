@@ -87,10 +87,10 @@ subroutine end_coord_adapt(CS)
   deallocate(CS)
 end subroutine end_coord_adapt
 
-subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau, adaptMean)
+subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau, adaptMean, adaptTwin)
   type(adapt_CS),    pointer    :: CS
   real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau
-  logical, optional, intent(in) :: adaptMean
+  logical, optional, intent(in) :: adaptMean, adaptTwin
 
   if (.not. associated(CS)) call MOM_error(FATAL, "set_adapt_params: CS not associated")
 
@@ -99,6 +99,7 @@ subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau
   if (present(adaptKappa)) CS%adaptKappa = adaptKappa
   if (present(adaptTau)) CS%adaptTau = adaptTau
   if (present(adaptMean)) CS%mean_h = adaptMean
+  if (present(adaptTwin)) CS%twin_grad = adaptTwin
 end subroutine set_adapt_params
 
 subroutine build_adapt_column(CS, G, GV, tv, i, j)
