@@ -1142,10 +1142,10 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
       call enable_averaging(dtdia, Time_end_thermo, CS%diag)
 !         call pass_vector(u, v, G%Domain)
       if (associated(tv%T)) &
-        call create_group_pass(pass_T_S_h, tv%T, G%Domain, To_All+Omit_Corners, halo=2)
+        call create_group_pass(pass_T_S_h, tv%T, G%Domain, halo=2)
       if (associated(tv%S)) &
-        call create_group_pass(pass_T_S_h, tv%S, G%Domain, To_All+Omit_Corners, halo=2)
-      call create_group_pass(pass_T_S_h, h, G%Domain, To_All+Omit_Corners, halo=2)
+        call create_group_pass(pass_T_S_h, tv%S, G%Domain, halo=2)
+      call create_group_pass(pass_T_S_h, h, G%Domain, halo=2)
       call do_group_pass(pass_T_S_h, G%Domain)
 
       if (CS%IDs%id_adapt_dens_weight_u > 0) diag_CS%dens_weight_u => dens_weight_u
