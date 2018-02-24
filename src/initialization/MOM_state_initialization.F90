@@ -480,6 +480,9 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, PF, dirs, &
 
       call get_param(PF, mdl, "DT", dt, "Timestep", fail_if_missing=.true., do_not_log=just_read)
 
+      call pass_var(h, G%Domain, halo=2)
+      call pass_var(tv%T, G%Domain, halo=2)
+      call pass_var(tv%S, G%Domain, halo=2)
       call ALE_regrid_accelerated(ALE_CSp, G, GV, h, tv, regrid_iterations, u, v, tracer_Reg, dt=dt, initial=.true.)
     endif
   endif
