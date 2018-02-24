@@ -1501,10 +1501,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1) :: hdj_sig, h_on_j
-  real :: di_pre, dj_pre
   real :: extent_left, extent_right
-  real :: tmpi, tmpj, tmpk, weight, weight2, h_interp, i_denom, j_denom
-  real :: eps, di_sig, dj_sig, hdj_sig_u, hdi_sig_v
+  real :: eps, weight, weight2, h_interp, i_denom, j_denom
+  real :: di_sig, dj_sig, hdj_sig_u, hdi_sig_v, dk_sig_u, dk_sig_v
 
   logical :: do_diag
 
@@ -1667,19 +1666,20 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         hdj_sig_u = 0.25 * ((hdj_sig(i,J,K)**2 + hdj_sig(i+1,J-1,K)**2) + &
              (hdj_sig(i+1,J,K)**2 + hdj_sig(i,J-1,K)**2))
+        dk_sig_u = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i+1,j)**2)
 
-        i_denom = sqrt(hdi_sig(I,j,K)**2 + hdj_sig_u + &
-             0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i+1,j)**2))
+        i_denom = hdi_sig(I,j,K)**2 + hdj_sig_u + dk_sig_u
         if (i_denom == 0.) then
           dz_i(I,j) = 0.
         else
-          dz_i(I,j) = hdi_sig(I,j,K) / i_denom
+          dz_i(I,j) = hdi_sig(I,j,K) / sqrt(i_denom)
         end if
 
         if (do_diag .and. associated(diag_CS%slope_u)) diag_CS%slope_u(I,j,K) = dz_i(I,j)
         dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * dt / CS%adapt_CS%adaptKappa
 
-        if (do_diag .and. associated(diag_CS%denom_u)) diag_CS%denom_u(I,j,K) = i_denom / (h_on_i(I,j,K) + GV%H_subroundoff)
+        if (do_diag .and. associated(diag_CS%denom_u)) &
+             diag_CS%denom_u(I,j,K) = sqrt(i_denom) / (h_on_i(I,j,K) + GV%H_subroundoff)
 
         ! limit slope based on adjacent layers
         ! dz_i has opposite sign to hdi_sig
@@ -1708,29 +1708,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           dz_p_i(I,j) = max(dz_p_i(I,j), -0.25 * min(h(i,j,k), h(i+1,j,k-1)))
         end if
 
-        tmpi = 0. ; tmpj = 0. ; tmpk = 0.
-        if (tmpi + tmpj + tmpk == 0.) then
-          i_denom = 0.0
-        else
-          i_denom = 1.0 / (tmpi + tmpj + tmpk)
-        endif
+        ! diagnose weights
+        if (do_diag .and. associated(diag_CS%dens_weight_u)) &
+             diag_CS%dens_weight_u(I,j,K) = dk_sig_u / i_denom
+        if (do_diag .and. associated(diag_CS%pres_weight_u)) diag_CS%pres_weight_u(I,j,K) = 0.
 
-        weight = tmpk * i_denom
-        weight2 = (tmpi + tmpj) * i_denom
-        if (do_diag .and. associated(diag_CS%dens_weight_u)) diag_CS%dens_weight_u(I,j,K) = weight
-        if (do_diag .and. associated(diag_CS%pres_weight_u)) diag_CS%pres_weight_u(I,j,K) = weight2
-
-#ifdef __DO_SAFETY_CHECKS__
-        if (weight > 1. .or. weight2 > 1.) call MOM_error(FATAL, 'build_grid_adaptive: Weight greater than 1')
-        if (weight < 0. .or. weight2 < 0.) call MOM_error(FATAL, 'build_grid_adaptive: Negative weight')
-
-        if (weight + weight2 /= 0.0 .and. abs(1. - (weight + weight2)) > 1e-6) then
-          write (tmp_char,*) 'sum of weights: ', weight + weight2
-          call MOM_error(WARNING, tmp_char)
-          call MOM_error(FATAL, 'build_grid_adaptive: Weights do not sum to 1')
-        endif
-#endif
-
+        ! override weights if required
         if (CS%adapt_CS%adaptAlphaRho >= 0.) then
           weight = CS%adapt_CS%adaptAlphaRho
 
@@ -1771,20 +1754,21 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         hdi_sig_v = 0.25 * ((hdi_sig(I,j,K)**2 + hdi_sig(I-1,j+1,K)**2) + &
              (hdi_sig(I,j+1,K)**2 + hdi_sig(I-1,j,K)**2))
+        dk_sig_v = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i,j+1)**2)
 
-        j_denom = sqrt(hdj_sig(i,J,K)**2 + hdi_sig_v + &
-             0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i,j+1)**2))
+        j_denom = hdj_sig(i,J,K)**2 + hdi_sig_v + dk_sig_v
         if (j_denom == 0.) then
           dz_j(i,J) = 0.
         else
-          dz_j(i,J) = hdj_sig(i,J,K) / j_denom
+          dz_j(i,J) = hdj_sig(i,J,K) / sqrt(j_denom)
         end if
 
         if (do_diag .and. associated(diag_CS%slope_v)) diag_CS%slope_v(i,J,K) = dz_j(i,J)
         ! dz_j beforehand is unitless (ratio of densities)
         dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * dt / CS%adapt_CS%adaptKappa
         ! dz_j is now [m2]
-        if (do_diag .and. associated(diag_CS%denom_v)) diag_CS%denom_v(i,J,K) = j_denom / (h_on_j(i,J,K) + GV%H_subroundoff)
+        if (do_diag .and. associated(diag_CS%denom_v)) &
+             diag_CS%denom_v(i,J,K) = sqrt(j_denom) / (h_on_j(i,J,K) + GV%H_subroundoff)
 
         ! density limiter
         ! dz_j [m2]
@@ -1808,29 +1792,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           dz_p_j(i,J) = max(dz_p_j(i,J), -0.25 * min(h(i,j,k), h(i,j+1,k-1)))
         end if
 
-        tmpi = 0. ; tmpj = 0. ; tmpk = 0.
-        if (tmpi + tmpj + tmpk == 0.) then
-          j_denom = 0.0
-        else
-          j_denom = 1.0 / (tmpi + tmpj + tmpk)
-        endif
+        ! diagnose weights
+        if (do_diag .and. associated(diag_CS%dens_weight_v)) &
+             diag_CS%dens_weight_v(i,J,K) = dk_sig_v / j_denom
+        if (do_diag .and. associated(diag_CS%pres_weight_v)) diag_CS%pres_weight_v(i,J,K) = 0.
 
-        weight = tmpk * j_denom
-        weight2 = (tmpi + tmpj) * j_denom
-        if (do_diag .and. associated(diag_CS%dens_weight_v)) diag_CS%dens_weight_v(i,J,K) = weight
-        if (do_diag .and. associated(diag_CS%pres_weight_v)) diag_CS%pres_weight_v(i,J,K) = weight2
-
-#ifdef __DO_SAFETY_CHECKS__
-        if (weight > 1. .or. weight2 > 1.) call MOM_error(FATAL, 'build_grid_adaptive: Weight greater than 1')
-        if (weight < 0. .or. weight2 < 0.) call MOM_error(FATAL, 'build_grid_adaptive: Negative weight')
-
-        if (weight + weight2 /= 0.0 .and. abs(1. - (weight + weight2)) > 1e-6) then
-          write (tmp_char,*) 'sum of weights: ', weight + weight2
-          call MOM_error(WARNING, tmp_char)
-          call MOM_error(FATAL, 'build_grid_adaptive: Weights do not sum to 1')
-        endif
-#endif
-
+        ! override weights if required
         if (CS%adapt_CS%adaptAlphaRho >= 0.) then
           weight = CS%adapt_CS%adaptAlphaRho
 
