@@ -49,6 +49,7 @@ type, public :: adapt_CS
   real :: adaptTau = 0.0
 
   logical :: mean_h = .false.
+  logical :: twin_grad = .true.
 
   type(zlike_CS), pointer :: zlike_CS => null()
 end type adapt_CS

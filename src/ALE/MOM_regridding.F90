@@ -1501,9 +1501,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1) :: hdj_sig, h_on_j
-  real :: extent_left, extent_right
+  real :: alpha, beta
   real :: eps, weight, weight2, h_interp, i_denom, j_denom
-  real :: di_sig, dj_sig, hdj_sig_u, hdi_sig_v, dk_sig_u, dk_sig_v
+  real :: di_sig, di_sig_up, di_sig_dn
+  real :: dj_sig, dj_sig_up, dj_sig_dn
+  real :: hdj_sig_u, hdi_sig_v, dk_sig_u, dk_sig_v
 
   logical :: do_diag
 
@@ -1621,8 +1623,26 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate horizontal derivatives on i-points
     do j = G%jsc-2,G%jec+2
       do I = G%isc-2,G%iec+1
-        di_sig = 0.5 * (alpha_int(i,j) + alpha_int(i+1,j)) * (t_int(i+1,j) - t_int(i,j)) &
-             + 0.5 * (beta_int(i,j) + beta_int(i+1,j)) * (s_int(i+1,j) - s_int(i,j))
+        alpha = 0.5 * (alpha_int(i,j) + alpha_int(i+1,j))
+        beta = 0.5 * (beta_int(i,j) + beta_int(i+1,j))
+
+        if (CS%adapt_CS%twin_grad) then
+          di_sig_up = alpha * (tv%t(i+1,j,k-1) - tv%t(i,j,k-1)) &
+               + beta * (tv%s(i+1,j,k-1) - tv%s(i,j,k-1))
+          di_sig_dn = alpha * (tv%t(i+1,j,k) - tv%t(i,j,k)) &
+               + beta * (tv%s(i+1,j,k) - tv%s(i,j,k))
+
+          if (di_sig_up * di_sig_dn <= 0.) then
+            di_sig = 0.
+          else
+            ! same sign, choose minimum
+            di_sig = sign(min(abs(di_sig_up), abs(di_sig_dn)), di_sig_up)
+          end if
+        else
+          di_sig = alpha * (t_int(i+1,j) - t_int(i,j)) &
+               + beta * (s_int(i+1,j) - s_int(i,j))
+        end if
+
         ! calculate hdi_sig by upstreamed h
         if (di_sig < 0.) then
           h_interp = 0.5 * (h(i,j,k-1) + h(i+1,j,k))
@@ -1640,8 +1660,24 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate horizontal derivatives on j-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-2,G%iec+2
-        dj_sig = 0.5 * (alpha_int(i,j) + alpha_int(i,j+1)) * (t_int(i,j+1) - t_int(i,j)) &
-             + 0.5 * (beta_int(i,j) + beta_int(i,j+1)) * (s_int(i,j+1) - s_int(i,j))
+        alpha = 0.5 * (alpha_int(i,j) + alpha_int(i,j+1))
+        beta = 0.5 * (beta_int(i,j) + beta_int(i,j+1))
+
+        if (CS%adapt_CS%twin_grad) then
+          dj_sig_up = alpha * (tv%t(i,j+1,k-1) - tv%t(i,j,k-1)) &
+               + beta * (tv%s(i,j+1,k-1) - tv%s(i,j,k-1))
+          dj_sig_dn = alpha * (tv%t(i,j+1,k) - tv%t(i,j,k)) &
+               + beta * (tv%s(i,j+1,k) - tv%s(i,j,k))
+
+          if (dj_sig_up * dj_sig_dn <= 0.) then
+            dj_sig = 0.
+          else
+            dj_sig = sign(min(abs(dj_sig_up), abs(dj_sig_dn)), dj_sig_up)
+          end if
+        else
+          dj_sig = alpha * (t_int(i,j+1) - t_int(i,j)) &
+               + beta * (s_int(i,j+1) - s_int(i,j))
+        end if
 
         if (dj_sig < 0.) then
           h_interp = 0.5 * (h(i,j,k-1) + h(i,j+1,k))
