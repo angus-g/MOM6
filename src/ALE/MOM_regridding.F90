@@ -1738,16 +1738,20 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         ! we also calculate the difference in pressure (interface position)
-        dz_p_i(I,j) = 0.5 * (z_int(i+1,j,K) - z_int(i,j,K))
+        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * dt / CS%adapt_CS%adaptKappa
         ! dz_p_i positive => left is further down than right
         ! => move left up, right down
 
-        if (dz_p_i(I,j) > 0.) then
-          ! dz_p_i positive -- left up, right down
-          dz_p_i(I,j) = min(dz_p_i(I,j), 0.25 * min(h(i,j,k-1), h(i+1,j,k)))
-        else
+        if (dz_p_i(I,j) < 0.) then
           ! dz_p_i negative -- right up, left down
-          dz_p_i(I,j) = max(dz_p_i(I,j), -0.25 * min(h(i,j,k), h(i+1,j,k-1)))
+          dz_p_i(I,j) = max(dz_p_i(I,j), -0.125 * min( &
+               h(i,j,k) * G%areaT(i,j), &
+               h(i+1,j,k-1) * G%areaT(i+1,j)) * G%IdyCu(I,j))
+        else
+          ! dz_p_i positive -- left up, right down
+          dz_p_i(I,j) = min(dz_p_i(I,j), 0.125 * min( &
+               h(i,j,k-1) * G%areaT(i,j), &
+               h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j))
         end if
 
         ! diagnose weights
@@ -1773,17 +1777,19 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_p_i(I,j) = dz_p_i(I,j) * weight2
 
         ! combining density and pressure fluxes
-        ! and re-apply limiter XXX check sign
+        ! and re-apply limiter
         dz_i(I,j) = dz_i(I,j) + dz_p_i(I,j)
-#if 0
         if (dz_i(I,j) < 0.) then
-          ! negative flux -- left down, right up
-          dz_i(I,j) = max(dz_i(I,j), -0.25 * min(h(i,j,k), h(i+1,j,k-1)))
+          ! hdi_sig positive -- left down, right up
+          dz_i(I,j) = max(dz_i(I,j), -0.125 * min( &
+               h(i,j,k) * G%areaT(i,j), &
+               h(i+1,j,k-1) * G%areaT(i+1,j)) * G%IdyCu(I,j))
         else
-          ! positive flux -- left up, right down
-          dz_i(I,j) = min(dz_i(I,j), 0.25 * min(h(i,j,k-1), h(i+1,j,k)))
+          ! hdi_sig negative -- left up, right down
+          dz_i(I,j) = min(dz_i(I,j), 0.125 * min( &
+               h(i,j,k-1) * G%areaT(i,j), &
+               h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j))
         end if
-#endif
       end do
     end do
 
@@ -1826,12 +1832,16 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
 
-        dz_p_j(i,J) = 0.5 * (z_int(i,j+1,K) - z_int(i,j,K))
+        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * dt / CS%adapt_CS%adaptKappa
 
-        if (dz_p_j(i,J) > 0.) then
-          dz_p_j(i,J) = min(dz_p_j(i,J), 0.25 * min(h(i,j,k-1), h(i,j+1,k)))
+        if (dz_p_j(i,J) < 0.) then
+          dz_p_j(i,J) = max(dz_p_j(i,J), -0.125 * min( &
+               h(i,j,k) * G%areaT(i,j), &
+               h(i,j+1,k-1) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         else
-          dz_p_j(i,J) = max(dz_p_j(i,J), -0.25 * min(h(i,j,k), h(i,j+1,k-1)))
+          dz_p_j(i,J) = min(dz_p_j(i,J), 0.125 * min( &
+               h(i,j,k-1) * G%areaT(i,j), &
+               h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
 
         ! diagnose weights
@@ -1857,15 +1867,17 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_p_j(i,J) = dz_p_j(i,J) * weight2
 
         dz_j(i,J) = dz_j(i,J) + dz_p_j(i,J)
-#if 0
         if (dz_j(i,J) < 0.) then
-          ! negative flux -- left down, right up
-          dz_j(i,J) = max(dz_j(i,J), -0.125 * min(h(i,j,k), h(i,j+1,k-1)))
+          ! hdj_sig positive -- left down, right up
+          dz_j(i,J) = max(dz_j(i,J), -0.125 * min( &
+               h(i,j,k) * G%areaT(i,j), &
+               h(i,j+1,k-1) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         else
-          ! positive flux -- left up, right down
-          dz_j(i,J) = min(dz_j(i,J), 0.125 * min(h(i,j,k-1), h(i,j+1,k)))
+          ! hdj_sig negative -- left up, right down
+          dz_j(i,J) = min(dz_j(i,J), 0.125 * min( &
+               h(i,j,k-1) * G%areaT(i,j), &
+               h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
-#endif
       end do
     end do
 
@@ -1876,7 +1888,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         ! can't cause any tangling. however, they may still lead to some grid-scale
         ! checkerboarding, so we reduce by another factor of 2
         ! 1 - 1e-5 -- make parameter
-        dz_a(i,j,K) = 0.5 * G%IareaT(i,j) &
+        dz_a(i,j,K) = 0.25 * G%IareaT(i,j) &
              * ((G%dyCu(I,j) * dz_i(I,j) - G%dyCu(I-1,j) * dz_i(I-1,j)) &
              + (G%dxCv(i,J) * dz_j(i,J) - G%dxCv(i,J-1) * dz_j(i,J-1)))
 
