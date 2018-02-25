@@ -181,7 +181,7 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
   logical :: coord_is_state_dependent, ierr
   real :: filt_len, strat_tol, index_scale, tmpReal
   real :: dz_fixed_sfc, Rho_avg_depth, nlay_sfc_int
-  real :: adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau
+  real :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau
   integer :: nz_fixed_sfc, k, nzf(4)
   real, dimension(:), allocatable :: dz     ! Resolution (thickness) in units of coordinate
   real, dimension(:), allocatable :: h_max  ! Maximum layer thicknesses, in m.
@@ -537,16 +537,16 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
     call get_param(param_file, mod, "ADAPT_ALPHA_P", adaptAlphaP, &
          "Pressure adaptivity coefficient (use negative value for automatic)", &
          units="nondim", default=-1.0)
-    call get_param(param_file, mod, "ADAPT_KAPPA", adaptKappa, &
+    call get_param(param_file, mod, "ADAPT_TIMESCALE", adaptTimescale, &
          "Timescale for adaptivity diffusivity (defaults to a day)", &
-         units="s", default=8640.0)
+         units="s", default=86400.0)
     call get_param(param_file, mod, "ADAPT_TAU", adaptTau, &
          "Coordinate relaxation timescale", units="s-1", default=0.0)
     call get_param(param_file, mod, "ADAPT_MEAN_H", tmpLogical, &
          "Use mean rather than 'upstream' h in calculations", default=.false.)
 
     call set_regrid_params(CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptKappa=adaptKappa, adaptTau=adaptTau, adaptMean=tmpLogical)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=tmpLogical)
 
     call get_param(param_file, mod, "ADAPT_TWIN_GRADIENT", tmpLogical, &
          "Use twin gradient approach, requiring sign of gradient above\n"//&
@@ -1718,7 +1718,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         if (do_diag .and. associated(diag_CS%slope_u)) diag_CS%slope_u(I,j,K) = dz_i(I,j)
-        dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * dt / CS%adapt_CS%adaptKappa
+        ! to convert from the density gradient to the flux, flip the sign and multiply by
+        ! kappa*dt
+        dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * dt / CS%adapt_CS%adaptTimescale
 
         if (do_diag .and. associated(diag_CS%denom_u)) &
              diag_CS%denom_u(I,j,K) = sqrt(i_denom) / (h_on_i(I,j,K) + GV%H_subroundoff)
@@ -1738,7 +1740,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         ! we also calculate the difference in pressure (interface position)
-        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * dt / CS%adapt_CS%adaptKappa
+        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * dt / CS%adapt_CS%adaptTimescale
         ! dz_p_i positive => left is further down than right
         ! => move left up, right down
 
@@ -1819,7 +1821,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         if (do_diag .and. associated(diag_CS%slope_v)) diag_CS%slope_v(i,J,K) = dz_j(i,J)
         ! dz_j beforehand is unitless (ratio of densities)
-        dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * dt / CS%adapt_CS%adaptKappa
+        dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * dt / CS%adapt_CS%adaptTimescale
         ! dz_j is now [m2]
         if (do_diag .and. associated(diag_CS%denom_v)) &
              diag_CS%denom_v(i,J,K) = sqrt(j_denom) / (h_on_j(i,J,K) + GV%H_subroundoff)
@@ -1838,7 +1840,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
 
-        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * dt / CS%adapt_CS%adaptKappa
+        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * dt / CS%adapt_CS%adaptTimescale
 
         if (dz_p_j(i,J) < 0.) then
           dz_p_j(i,J) = max(dz_p_j(i,J), -0.125 * min( &
@@ -2590,7 +2592,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              compress_fraction, dz_min_surface, nz_fixed_surface, Rho_ML_avg_depth, &
              nlay_ML_to_interior, fix_haloclines, halocline_filt_len, &
              halocline_strat_tol, integrate_downward_for_e, &
-             adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau, adaptMean, adaptTwin)
+             adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2607,7 +2609,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_filt_len !< Length scale over which to filter T & S when looking for spuriously unstable water mass profiles (m)
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
-  real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau
+  real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau
   logical, optional, intent(in) :: adaptMean, adaptTwin
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
@@ -2659,7 +2661,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptKappa=adaptKappa, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin)
   end select
 
 end subroutine set_regrid_params

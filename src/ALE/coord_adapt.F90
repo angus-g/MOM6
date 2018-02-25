@@ -43,7 +43,7 @@ type, public :: adapt_CS
   real :: adaptAlphaP = -1.0
 
   !> Timescale for diffusivity
-  real :: adaptKappa = 1.0
+  real :: adaptTimescale
 
   !> Coordinate relaxation coefficient/timescale
   real :: adaptTau = 0.0
@@ -87,16 +87,16 @@ subroutine end_coord_adapt(CS)
   deallocate(CS)
 end subroutine end_coord_adapt
 
-subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau, adaptMean, adaptTwin)
+subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin)
   type(adapt_CS),    pointer    :: CS
-  real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptKappa, adaptTau
+  real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau
   logical, optional, intent(in) :: adaptMean, adaptTwin
 
   if (.not. associated(CS)) call MOM_error(FATAL, "set_adapt_params: CS not associated")
 
   if (present(adaptAlphaRho)) CS%adaptAlphaRho = adaptAlphaRho
   if (present(adaptAlphaP)) CS%adaptAlphaP = adaptAlphaP
-  if (present(adaptKappa)) CS%adaptKappa = adaptKappa
+  if (present(adaptTimescale)) CS%adaptTimescale = adaptTimescale
   if (present(adaptTau)) CS%adaptTau = adaptTau
   if (present(adaptMean)) CS%mean_h = adaptMean
   if (present(adaptTwin)) CS%twin_grad = adaptTwin
