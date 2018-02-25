@@ -1759,6 +1759,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
              diag_CS%dens_weight_u(I,j,K) = dk_sig_u / i_denom
         if (do_diag .and. associated(diag_CS%pres_weight_u)) diag_CS%pres_weight_u(I,j,K) = 0.
 
+        if (dk_sig_u / i_denom > 0.5) then
+          weight = 1.0 ; weight2 = 0.0
+        else
+          weight = 0.0 ; weight2 = 1.0
+        endif
+
         ! override weights if required
         if (CS%adapt_CS%adaptAlphaRho >= 0.) then
           weight = CS%adapt_CS%adaptAlphaRho
@@ -1848,6 +1854,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         if (do_diag .and. associated(diag_CS%dens_weight_v)) &
              diag_CS%dens_weight_v(i,J,K) = dk_sig_v / j_denom
         if (do_diag .and. associated(diag_CS%pres_weight_v)) diag_CS%pres_weight_v(i,J,K) = 0.
+
+        if (dk_sig_v / j_denom > 0.5) then
+          weight = 1.0 ; weight2 = 0.0
+        else
+          weight = 0.0 ; weight2 = 1.0
+        endif
 
         ! override weights if required
         if (CS%adapt_CS%adaptAlphaRho >= 0.) then
