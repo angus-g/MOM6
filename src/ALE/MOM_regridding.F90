@@ -1484,35 +1484,44 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(in)    :: h    !< Layer thicknesses, in H (usually m or kg m-2)
   type(thermo_var_ptrs),                       intent(in)    :: tv   !< A structure pointing to various thermodynamic variables
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(inout) :: dzInterface
-  type(remapping_CS),                          intent(in)    :: remapCS
-  type(regridding_CS),                         intent(in)    :: CS
-  real, optional, intent(in) :: dt
-  type(adapt_diag_CS), optional, intent(inout) :: diag_CS
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), intent(inout) :: dzInterface !< The changes in interface height due to regridding
+  type(remapping_CS),                          intent(in)    :: remapCS !< Unused
+  type(regridding_CS),                         intent(in)    :: CS !< Regridding control structure
+  real, optional, intent(in) :: dt !< The intended timestep over which this regridding operation applies
+  type(adapt_diag_CS), optional, intent(inout) :: diag_CS !< A control structure to receive diag info from regridding
 
   ! local variables
   integer :: i, j, k, nz ! indices and dimension lengths
 
-  ! temperature, salinity and pressure on interfaces
-  real, dimension(SZI_(G),SZJ_(G)) :: t_int, t_int_kp1, s_int, s_int_kp1, dk_sig_int
+  ! temperature and salinity on interfaces
+  real, dimension(SZI_(G),SZJ_(G)) :: t_int, s_int
+  ! interface heights
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: z_int
+  ! drho/dt and drho/ds on interfaces
   real, dimension(SZI_(G),SZJ_(G)) :: alpha_int, alpha_int_kp1
   real, dimension(SZI_(G),SZJ_(G)) :: beta_int, beta_int_kp1
+  ! density and pressure flux components
   real, dimension(SZIB_(G),SZJ_(G)) :: dz_i, dz_p_i
   real, dimension(SZI_(G),SZJB_(G)) :: dz_j, dz_p_j
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: dk_sig, dk_sig_prenorm
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a, dz_p
+  ! vertical gradient in sigma
+  real, dimension(SZI_(G),SZJ_(G)) :: dk_sig_int
+  ! final change in interface height
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a
 
-  real, dimension(SZK_(GV)+1) :: z_old, z_new, z_tgt, dzInterfacePrev
-
+  ! numerator of density term and upstreamed h
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1) :: hdj_sig, h_on_j
+  ! temporary alpha/beta interpolated to velocity points
   real :: alpha, beta
+  ! some temporary quantities
   real :: eps, weight, weight2, h_interp, i_denom, j_denom
+  ! numerator (and intermediates) of density term before multiplication by h
   real :: di_sig, di_sig_up, di_sig_dn
   real :: dj_sig, dj_sig_up, dj_sig_dn
+  ! difference quantities interpolated to other locations
   real :: hdj_sig_u, hdi_sig_v, dk_sig_u, dk_sig_v
 
+  ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag
 
 #ifdef __DO_SAFETY_CHECKS__
@@ -1524,103 +1533,50 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   if (.not. present(dt)) &
        call MOM_error(FATAL, 'build_grid_adaptive called without a timestep!')
 
-  eps = 1.
-  eps = epsilon(eps)
-
+  eps = 1. ; eps = epsilon(eps)
   do_diag = present(diag_CS)
-
   nz = GV%ke
 
   ! calculate interface positions
-  ! position bottom on topography
+  ! position bottom on topography and sum upward
   z_int(:,:,nz+1) = -G%bathyT(:,:)
   do K = nz, 1, -1
     z_int(:,:,K) = z_int(:,:,K+1) + h(:,:,k)
   enddo
 
+  ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0.
   dz_a(:,:,nz+1) = 0.
 
   ! zero out diagnostic arrays
   if (do_diag) then
-    if (associated(diag_CS%dens_weight_u)) diag_CS%dens_weight_u(:,:,:) = 0.
-    if (associated(diag_CS%pres_weight_u)) diag_CS%pres_weight_u(:,:,:) = 0.
-    if (associated(diag_CS%dens_weight_v)) diag_CS%dens_weight_v(:,:,:) = 0.
-    if (associated(diag_CS%pres_weight_v)) diag_CS%pres_weight_v(:,:,:) = 0.
+    if (associated(diag_CS%weight_u)) diag_CS%weight_u(:,:,:) = 0.
+    if (associated(diag_CS%weight_v)) diag_CS%weight_v(:,:,:) = 0.
     if (associated(diag_CS%slope_u)) diag_CS%slope_u(:,:,:) = 0.
     if (associated(diag_CS%slope_v)) diag_CS%slope_v(:,:,:) = 0.
   endif
 
-  ! populate data ahead of first interface
-  ! we need an extra ring of tracer points containing information
-  ! so that we can interpolate onto cell faces for flux calculations
-  do j = G%jsc-2,G%jec+2
-    do i = G%isc-2,G%iec+2
-      t_int_kp1(i,j) = ( &
-           tv%t(i,j,1) * (h(i,j,2) + GV%H_subroundoff) + &
-           tv%t(i,j,2) * (h(i,j,1) + GV%H_subroundoff)) / &
-           (h(i,j,1) + h(i,j,2) + 2*GV%H_subroundoff)
-      s_int_kp1(i,j) = ( &
-           tv%s(i,j,1) * (h(i,j,2) + GV%H_subroundoff) + &
-           tv%s(i,j,2) * (h(i,j,1) + GV%H_subroundoff)) / &
-           (h(i,j,1) + h(i,j,2) + 2*GV%H_subroundoff)
-
-      ! t_int_kp1(i,j) = 0.5 * (tv%t(i,j,1) + tv%t(i,j,2))
-      ! s_int_kp1(i,j) = 0.5 * (tv%s(i,j,1) + tv%s(i,j,2))
-    enddo
-
-    ! calculate density derivatives on interfaces
-    call calculate_density_derivs(tv%t(:,j,1), tv%s(:,j,1), -z_int(:,j,1) * GV%H_to_Pa, &
-         alpha_int(:,j), beta_int(:,j), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
-    call calculate_density_derivs(t_int_kp1(:,j), s_int_kp1(:,j), -z_int(:,j,2) * GV%H_to_Pa, &
-         alpha_int_kp1(:,j), beta_int_kp1(:,j), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
-
-    do i = G%isc-2,G%iec+2
-      dk_sig(i,j,1) = 0.5 * (alpha_int(i,j) + alpha_int_kp1(i,j)) * (t_int_kp1(i,j) - tv%t(i,j,1)) &
-           + 0.5 * (beta_int(i,j) + beta_int_kp1(i,j)) * (s_int_kp1(i,j) - tv%s(i,j,1))
-      dk_sig_prenorm(i,j,1) = dk_sig(i,j,1)
-      dk_sig(i,j,1) = max(dk_sig(i,j,1), 0.)
-    enddo
-  enddo
-
   do K = 2,nz
     do j = G%jsc-2,G%jec+2
       do i = G%isc-2,G%iec+2
-        ! copy from interface ahead
-        t_int(i,j) = t_int_kp1(i,j)
-        s_int(i,j) = s_int_kp1(i,j)
-        alpha_int(i,j) = alpha_int_kp1(i,j)
-        beta_int(i,j) = beta_int_kp1(i,j)
+        t_int(i,j) = ( &
+             tv%t(i,j,k-1) * (h(i,j,k) + GV%H_subroundoff) + &
+             tv%t(i,j,k) * (h(i,j,k-1) + GV%H_subroundoff)) / &
+             (h(i,j,k-1) + h(i,j,k) + 2*GV%H_subroundoff)
+        s_int(i,j) = ( &
+             tv%s(i,j,k-1) * (h(i,j,k) + GV%H_subroundoff) + &
+             tv%s(i,j,k) * (h(i,j,k-1) + GV%H_subroundoff)) / &
+             (h(i,j,k-1) + h(i,j,k) + 2*GV%H_subroundoff)
 
-        if (k == nz) then
-          ! use constant value for bottom interface
-          t_int_kp1(i,j) = tv%t(i,j,nz)
-          s_int_kp1(i,j) = tv%s(i,j,nz)
-        else
-          ! calculate ahead one interface (interior)
-          t_int_kp1(i,j) = ( &
-               tv%t(i,j,k) * (h(i,j,k+1) + GV%H_subroundoff) + &
-               tv%t(i,j,k+1) * (h(i,j,k) + GV%H_subroundoff)) / &
-               (h(i,j,k) + h(i,j,k+1) + 2*GV%H_subroundoff)
-          s_int_kp1(i,j) = ( &
-               tv%s(i,j,k) * (h(i,j,k+1) + GV%H_subroundoff) + &
-               tv%s(i,j,k+1) * (h(i,j,k) + GV%H_subroundoff)) / &
-               (h(i,j,k) + h(i,j,k+1) + 2*GV%H_subroundoff)
-
-          ! t_int_kp1(i,j) = 0.5 * (tv%t(i,j,k) + tv%t(i,j,k+1))
-          ! s_int_kp1(i,j) = 0.5 * (tv%s(i,j,k) + tv%s(i,j,k+1))
-        endif
+        ! simple mean instead of linear interpolation
+        ! t_int(i,j) = 0.5 * (tv%t(i,j,k-1) + tv%t(i,j,k))
+        ! s_int(i,j) = 0.5 * (tv%s(i,j,k-1) + tv%s(i,j,k))
       enddo
 
-      call calculate_density_derivs(t_int_kp1(:,j), s_int_kp1(:,j), -z_int(:,j,K+1) * GV%H_to_Pa, &
-           alpha_int_kp1(:,j), beta_int_kp1(:,j), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
+      call calculate_density_derivs(t_int(:,j), s_int(:,j), -z_int(:,j,K) * GV%H_to_Pa, &
+           alpha_int(:,j), beta_int(:,j), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
 
       do i = G%isc-2,G%iec+2
-        dk_sig(i,j,k) = 0.5 * (alpha_int(i,j) + alpha_int_kp1(i,j)) * (t_int_kp1(i,j) - t_int(i,j)) &
-             + 0.5 * (beta_int(i,j) + beta_int_kp1(i,j)) * (s_int_kp1(i,j) - s_int(i,j))
-        dk_sig_prenorm(i,j,k) = dk_sig(i,j,k)
-        dk_sig(i,j,k) = max(dk_sig(i,j,k), 0.)
-
         dk_sig_int(i,j) = alpha_int(i,j) * (tv%t(i,j,k) - tv%t(i,j,k-1)) + &
              beta_int(i,j) * (tv%s(i,j,k) - tv%s(i,j,k-1))
       enddo
@@ -1633,6 +1589,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         beta = 0.5 * (beta_int(i,j) + beta_int(i+1,j))
 
         if (CS%adapt_CS%twin_grad) then
+          ! with the twin gradient method, we only use the gradient
+          ! if the sign is agreed upon above and below the interface
           di_sig_up = alpha * (tv%t(i+1,j,k-1) - tv%t(i,j,k-1)) &
                + beta * (tv%s(i+1,j,k-1) - tv%s(i,j,k-1))
           di_sig_dn = alpha * (tv%t(i+1,j,k) - tv%t(i,j,k)) &
@@ -1645,24 +1603,30 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
             di_sig = sign(min(abs(di_sig_up), abs(di_sig_dn)), di_sig_up)
           end if
         else
+          ! otherwise, just calculate the gradient directly on the interface
           di_sig = alpha * (t_int(i+1,j) - t_int(i,j)) &
                + beta * (s_int(i+1,j) - s_int(i,j))
         end if
 
         ! calculate hdi_sig by upstreamed h
         if (di_sig < 0.) then
+          ! left is denser than right, left moves up, right moves down
           h_interp = 0.5 * (h(i,j,k-1) + h(i+1,j,k))
         else
           h_interp = 0.5 * (h(i,j,k) + h(i+1,j,k-1))
         end if
 
+        ! alternatively, we can just take a simple mean of thicknesses onto the
+        ! interface and velocity point
         if (CS%adapt_CS%mean_h) &
              h_interp = 0.25 * ((h(i,j,k-1) + h(i+1,j,k)) + (h(i,j,k) + h(i+1,j,k-1)))
 
         h_on_i(I,j,K) = h_interp
+        ! this is the full numerator of the density term
         hdi_sig(I,j,K) = h_interp * di_sig * G%IdxCu(I,j)
       enddo
     enddo
+
     ! calculate horizontal derivatives on j-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-2,G%iec+2
@@ -1699,19 +1663,17 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       enddo
     enddo
 
-    ! u-points -- these are calculated regardless of the symmetric memory setting
-    ! -- we need to calculate the flux at the north and south of our domain
-    ! G%isc-1:G%iec+1 -- so we need an extra point on the south
+    ! u-points
     do j = G%jsc-1,G%jec+1
       do I = G%isc-2,G%iec+1
-        dz_p_i(I,j) = 0.0
-
+        ! interpolate terms in the denominator onto the u-point
         hdj_sig_u = 0.25 * ((hdj_sig(i,J,K)**2 + hdj_sig(i+1,J-1,K)**2) + &
              (hdj_sig(i+1,J,K)**2 + hdj_sig(i,J-1,K)**2))
         dk_sig_u = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i+1,j)**2)
 
         i_denom = hdi_sig(I,j,K)**2 + hdj_sig_u + dk_sig_u
         if (i_denom == 0.) then
+          ! if gradients in all directions are exactly zero, we don't want any flux
           dz_i(I,j) = 0.
         else
           dz_i(I,j) = hdi_sig(I,j,K) / sqrt(i_denom)
@@ -1757,10 +1719,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         ! diagnose weights
-        if (do_diag .and. associated(diag_CS%dens_weight_u)) &
-             diag_CS%dens_weight_u(I,j,K) = dk_sig_u / i_denom
-        if (do_diag .and. associated(diag_CS%pres_weight_u)) diag_CS%pres_weight_u(I,j,K) = 0.
+        if (do_diag .and. associated(diag_CS%weight_u)) &
+             diag_CS%weight_u(I,j,K) = dk_sig_u / i_denom
 
+        ! calculate weighting between density and pressure terms
+        ! by a cutoff value on the local normalised stratification
         if (dk_sig_u / i_denom > 0.5) then
           weight = 1.0 ; weight2 = 0.0
         else
@@ -1785,7 +1748,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_p_i(I,j) = dz_p_i(I,j) * weight2
 
         ! combining density and pressure fluxes
-        ! and re-apply limiter
+        ! and re-apply limiter -- with a full cut-off this isn't necessary
         dz_i(I,j) = dz_i(I,j) + dz_p_i(I,j)
         if (dz_i(I,j) < 0.) then
           ! hdi_sig positive -- left down, right up
@@ -1801,13 +1764,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       end do
     end do
 
-    ! v-points -- these are calculated regardless of the symmetric memory setting
-    ! -- we need to calculate the flux at the left and right of our domain
-    ! G%jsc-1:G%jec+1 -- so we need an extra point on the left
+    ! v-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-1,G%iec+1
-        dz_p_j(i,J) = 0.0
-
         hdi_sig_v = 0.25 * ((hdi_sig(I,j,K)**2 + hdi_sig(I-1,j+1,K)**2) + &
              (hdi_sig(I,j+1,K)**2 + hdi_sig(I-1,j,K)**2))
         dk_sig_v = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i,j+1)**2)
@@ -1853,9 +1812,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         ! diagnose weights
-        if (do_diag .and. associated(diag_CS%dens_weight_v)) &
-             diag_CS%dens_weight_v(i,J,K) = dk_sig_v / j_denom
-        if (do_diag .and. associated(diag_CS%pres_weight_v)) diag_CS%pres_weight_v(i,J,K) = 0.
+        if (do_diag .and. associated(diag_CS%weight_v)) &
+             diag_CS%weight_v(i,J,K) = dk_sig_v / j_denom
 
         if (dk_sig_v / j_denom > 0.5) then
           weight = 1.0 ; weight2 = 0.0
@@ -1901,28 +1859,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         ! prior to this point, dz_a and dz_p should be limited such that they
         ! can't cause any tangling. however, they may still lead to some grid-scale
         ! checkerboarding, so we reduce by another factor of 2
-        ! 1 - 1e-5 -- make parameter
         dz_a(i,j,K) = 0.25 * G%IareaT(i,j) &
              * ((G%dyCu(I,j) * dz_i(I,j) - G%dyCu(I-1,j) * dz_i(I-1,j)) &
              + (G%dxCv(i,J) * dz_j(i,J) - G%dxCv(i,J-1) * dz_j(i,J-1)))
-
-#if 0
-        if (dz_a(i,j,K) < 0.) then
-          ! adaptive term says interface should move upward
-          if (abs(dz_a(i,j,K)) > 0.5*h(i,j,k-1)) then
-            write (tmp_char,*) 'dz_a', dz_a(i,j,K), '0.5*h', 0.5*h(i,j,k-1)
-            call MOM_error(WARNING, tmp_char)
-            call MOM_error(FATAL, 'build_grid_adaptive: Upward-moving interface by density uses more than 0.5*h')
-          endif
-        else
-          ! interface should move downward
-          if (abs(dz_a(i,j,K)) > 0.5*h(i,j,k)) then
-            write (tmp_char,*) 'dz_a', dz_a(i,j,K), '0.5*h', 0.5*h(i,j,k)
-            call MOM_error(WARNING, tmp_char)
-            call MOM_error(FATAL, 'build_grid_adaptive: Downward-moving interface by density uses more than 0.5*h')
-          endif
-        endif
-#endif
       end do
     end do
   end do
@@ -1933,62 +1872,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       ! for land points, leave interfaces undisturbed
       if (G%bathyT(i,j) < 0.5) cycle
 
-      z_old(:) = z_int(i,j,:)
-      z_new(:) = z_int(i,j,:) + dz_a(i,j,:)
-
-      ! z_new(:) = -(z_old(:) + dz_a(i,j,:) + dz_p(i,j,:))
-      ! call build_zstar_column(CS%adapt_CS%zlike_CS, nz, G%bathyT(i,j), &
-      !      z_old(nz+1), z_tgt)
-
-      !! restoring term
-      ! ! filter between adaptive grid and static grid
-      ! call filtered_grid_motion(CS, nz, z_new, z_tgt, dzInterface(i,j,:))
-      ! ! apply adaptive interface changes on top
-      ! dzInterface(i,j,:) = dzInterface(i,j,:) - dz_a(i,j,:) - dz_p(i,j,:)
-
-      !! restoring term disabled
-      call filtered_grid_motion(CS, nz, z_old, z_new, dzInterface(i,j,:))
-      dzInterface(i,j,:) = -dzInterface(i,j,:) ! flip signs
-
       ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
       ! we effectively add the depth of the ocean and immediately subtract it out, losing
       ! about 4-5 orders of magnitude!
+      ! instead, we just apply the calculated value directly
       dzInterface(i,j,:) = dz_a(i,j,:)
-
-#ifdef __DO_SAFETY_CHECKS__
-      !call check_grid_column(nz, G%bathyT(i,j), h(i,j,:), dzInterface(i,j,:), 'before adjust_interface_motion', i, j, is_fatal=.false.)
-#endif
-
-      dzInterfacePrev(:) = dzInterface(i,j,:)
-      !call adjust_interface_motion(nz, CS%min_thickness, h(i,j,:), dzInterface(i,j,:))
-
-#ifdef __DO_SAFETY_CHECKS__
-      call check_grid_column(nz, G%bathyT(i,j), h(i,j,:), dzInterface(i,j,:), 'after adjust_interface_motion', i, j, dzInterfacePrev)
-
-      if (dzInterface(i,j,1) /= 0.) call MOM_error(FATAL, 'build_grid_adaptive: Surface moved')
-      if (dzInterface(i,j,nz+1) /= 0.) call MOM_error(FATAL, 'build_grid_adaptive: Bottom moved')
-
-      ! do K = 2,nz
-      !   if (z_new(K) < z_new(K-1)) then
-      !     write (tmp_char,*) 'build_grid_adaptive: Interior interfaces cross', &
-      !          z_new(K), z_new(K-1)
-      !     call MOM_error(FATAL, tmp_char)
-      !   endif
-      ! enddo
-
-      total_thickness = 0.0
-      do k = 1,nz
-        total_thickness = total_thickness + h(i,j,k)
-      enddo
-
-      dh = max(G%bathyT(i,j), total_thickness)
-      ! not sure why this is tripping now...
-      ! if (abs(z_new(1) + z_old(1)) > (nz-1)*0.5*epsilon(dh)*dh) then
-      !   print *, 'z_new(1)', z_new(1), 'z_old(1)', z_old(1)
-      !   stop 'build_grid_adaptive: Top surface has moved'
-      ! endif
-#endif
-
     enddo
   enddo
 end subroutine build_grid_adaptive

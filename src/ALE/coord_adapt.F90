@@ -14,11 +14,8 @@ implicit none ; private
 #include <MOM_memory.h>
 
 type, public :: adapt_diag_CS
-  real, dimension(:,:,:), pointer :: dens_weight_u => null()
-  real, dimension(:,:,:), pointer :: dens_weight_v => null()
-
-  real, dimension(:,:,:), pointer :: pres_weight_u => null()
-  real, dimension(:,:,:), pointer :: pres_weight_v => null()
+  real, dimension(:,:,:), pointer :: weight_u => null()
+  real, dimension(:,:,:), pointer :: weight_v => null()
 
   real, dimension(:,:,:), pointer :: slope_u => null()
   real, dimension(:,:,:), pointer :: slope_v => null()
