@@ -14,14 +14,17 @@ implicit none ; private
 #include <MOM_memory.h>
 
 type, public :: adapt_diag_CS
-  real, dimension(:,:,:), pointer :: weight_u => null()
-  real, dimension(:,:,:), pointer :: weight_v => null()
+  real, dimension(:,:,:), pointer :: phys_u => null()
+  real, dimension(:,:,:), pointer :: phys_v => null()
 
   real, dimension(:,:,:), pointer :: slope_u => null()
   real, dimension(:,:,:), pointer :: slope_v => null()
 
   real, dimension(:,:,:), pointer :: denom_u => null()
   real, dimension(:,:,:), pointer :: denom_v => null()
+
+  real, dimension(:,:,:), pointer :: coord_u => null()
+  real, dimension(:,:,:), pointer :: coord_v => null()
 end type adapt_diag_CS
 
 type, public :: adapt_CS
@@ -49,6 +52,7 @@ type, public :: adapt_CS
 
   logical :: mean_h = .false.
   logical :: twin_grad = .true.
+  logical :: physicalSlope
 
   type(zlike_CS), pointer :: zlike_CS => null()
 end type adapt_CS
@@ -86,10 +90,10 @@ subroutine end_coord_adapt(CS)
   deallocate(CS)
 end subroutine end_coord_adapt
 
-subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin, adaptCutoff, adaptSmooth)
+subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope)
   type(adapt_CS),    pointer    :: CS
   real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
-  logical, optional, intent(in) :: adaptMean, adaptTwin
+  logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope
 
   if (.not. associated(CS)) call MOM_error(FATAL, "set_adapt_params: CS not associated")
 
@@ -101,6 +105,7 @@ subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adap
   if (present(adaptTwin)) CS%twin_grad = adaptTwin
   if (present(adaptCutoff)) CS%adaptCutoff = adaptCutoff
   if (present(adaptSmooth)) CS%adaptSmooth = adaptSmooth
+  if (present(adaptPhysicalSlope)) CS%physicalSlope = adaptPhysicalSlope
 end subroutine set_adapt_params
 
 subroutine build_adapt_column(CS, G, GV, tv, i, j)

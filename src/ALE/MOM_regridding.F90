@@ -558,6 +558,11 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
          "and below an interface to agree, avoiding a vertical null mode.", &
          default=.true.)
     call set_regrid_params(CS, adaptTwin=tmpLogical)
+
+    call get_param(param_file, mod, "ADAPT_PHYSICAL_SLOPE", tmpLogical, &
+         "Use a physical slope calculation for weighting of terms.", &
+         default=.true.)
+    call set_regrid_params(CS, adaptPhysicalSlope=tmpLogical)
   endif
 
   if (main_parameters .and. coord_is_state_dependent) then
@@ -1514,8 +1519,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a
 
   ! numerator of density term and upstreamed h
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1) :: hdj_sig, h_on_j
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i, hdi_sig_phys
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1) :: hdj_sig, h_on_j, hdj_sig_phys
   ! temporary alpha/beta interpolated to velocity points
   real :: alpha, beta
   ! some temporary quantities
@@ -1525,7 +1530,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real :: dj_sig, dj_sig_up, dj_sig_dn
   ! difference quantities interpolated to other locations
   real :: hdi_sig_u, hdj_sig_u, hdi_sig_v, hdj_sig_v, dk_sig_u, dk_sig_v
-  real :: ts_ratio, slope
+  real :: ts_ratio, slope, phys_slope
 
   ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag
@@ -1559,10 +1564,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
   ! zero out diagnostic arrays
   if (do_diag) then
-    if (associated(diag_CS%weight_u)) diag_CS%weight_u(:,:,:) = 0.
-    if (associated(diag_CS%weight_v)) diag_CS%weight_v(:,:,:) = 0.
+    if (associated(diag_CS%phys_u)) diag_CS%phys_u(:,:,:) = 0.
+    if (associated(diag_CS%phys_v)) diag_CS%phys_v(:,:,:) = 0.
     if (associated(diag_CS%slope_u)) diag_CS%slope_u(:,:,:) = 0.
     if (associated(diag_CS%slope_v)) diag_CS%slope_v(:,:,:) = 0.
+    if (associated(diag_CS%coord_u)) diag_CS%coord_u(:,:,:) = 0.
+    if (associated(diag_CS%coord_v)) diag_CS%coord_v(:,:,:) = 0.
   endif
 
   do K = 2,nz
@@ -1633,6 +1640,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         h_on_i(I,j,K) = h_interp
         ! this is the full numerator of the density term
         hdi_sig(I,j,K) = h_interp * di_sig * G%IdxCu(I,j)
+        ! calculate physical slope
+        ! XXX take the square root of the average of the squares here???
+        dk_sig_u = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i+1,j))
+        hdi_sig_phys(I,j,K) = hdi_sig(I,j,K) - &
+             G%IdxCu(I,j) * dk_sig_u * (z_int(i+1,j,K) - z_int(i,j,K))
       enddo
     enddo
 
@@ -1669,6 +1681,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         h_on_j(i,J,K) = h_interp
         hdj_sig(i,J,K) = h_interp * dj_sig * G%IdyCv(i,J)
+        dk_sig_v = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i,j+1))
+        hdj_sig_phys(i,J,K) = hdj_sig(i,J,K) - &
+             G%IdyCv(i,J) * dk_sig_v * (z_int(i,j+1,K) - z_int(i,j,K))
       enddo
     enddo
 
@@ -1734,6 +1749,26 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         else
           slope = (hdi_sig_u + hdj_sig_u) / i_denom
         endif
+        if (do_diag .and. associated(diag_CS%coord_u)) &
+             diag_CS%coord_u(I,j,K) = slope
+
+        ! calculate physical slope
+        hdi_sig_u = hdi_sig_phys(I,j,K)**2
+        hdj_sig_u = 0.25 * ((hdj_sig_phys(i,J,K)**2 + hdj_sig_phys(i+1,J-1,K)**2) + &
+             (hdj_sig_phys(i+1,J,K)**2 + hdj_sig_phys(i,J-1,K)**2))
+        i_denom = hdi_sig_u + hdj_sig_u + dk_sig_u
+
+        if (i_denom == 0.) then
+          ! unstratified limit
+          phys_slope = 1.0
+        else
+          phys_slope = (hdi_sig_u + hdj_sig_u) / i_denom
+        endif
+        if (do_diag .and. associated(diag_CS%phys_u)) &
+             diag_CS%phys_u(I,j,K) = phys_slope
+
+        ! use physical slope or not?
+        if (CS%adapt_CS%physicalSlope) slope = phys_slope
 
         ! calculate weighting between density and pressure terms
         ! by a cutoff value on the local normalised stratification
@@ -1831,6 +1866,23 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         else
           slope = (hdi_sig_v + hdj_sig_v) / j_denom
         endif
+        if (do_diag .and. associated(diag_CS%coord_v)) &
+             diag_CS%coord_v(i,J,K) = slope
+
+        hdj_sig_v = hdj_sig_phys(i,J,K)**2
+        hdi_sig_v = 0.25 * ((hdi_sig_phys(I,j,K)**2 + hdi_sig_phys(I-1,j+1,K)**2) + &
+             (hdi_sig_phys(I,j+1,K)**2 + hdi_sig_phys(I-1,j,K)**2))
+        j_denom = hdi_sig_v + hdj_sig_v + dk_sig_v
+
+        if (j_denom == 0.) then
+          phys_slope = 1.0
+        else
+          phys_slope = (hdi_sig_v + hdj_sig_v) / j_denom
+        endif
+        if (do_diag .and. associated(diag_CS%phys_v)) &
+             diag_CS%phys_v(i,J,K) = phys_slope
+
+        if (CS%adapt_CS%physicalSlope) slope = phys_slope
 
         if (slope < CS%adapt_CS%adaptCutoff**2) then
           weight = 1.0 - CS%adapt_CS%adaptSmooth ; weight2 = CS%adapt_CS%adaptSmooth
@@ -2498,7 +2550,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              nlay_ML_to_interior, fix_haloclines, halocline_filt_len, &
              halocline_strat_tol, integrate_downward_for_e, &
              adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, &
-             adaptMean, adaptTwin, adaptCutoff, adaptSmooth)
+             adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2516,7 +2568,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
   real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
-  logical, optional, intent(in) :: adaptMean, adaptTwin
+  logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
   if (present(boundary_extrapolation)) call set_interp_extrap(CS%interp_CS, boundary_extrapolation)
@@ -2567,7 +2619,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope)
   end select
 
 end subroutine set_regrid_params

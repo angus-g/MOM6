@@ -142,13 +142,14 @@ type MOM_diag_IDs
   ! 2-d state field
   integer :: id_ssh_inst = -1
   ! adaptive coordinate debugging
-  integer :: id_adapt_weight_u = -1
-  integer :: id_adapt_weight_v = -1
-
+  integer :: id_adapt_phys_u = -1
+  integer :: id_adapt_phys_v = -1
   integer :: id_adapt_slope_u = -1
   integer :: id_adapt_slope_v = -1
   integer :: id_adapt_denom_u = -1
   integer :: id_adapt_denom_v = -1
+  integer :: id_adapt_coord_u = -1
+  integer :: id_adapt_coord_v = -1
 end type MOM_diag_IDs
 
 !> Structure describing the state of the ocean.
@@ -1079,8 +1080,8 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
   logical,                  intent(in)    :: update_BBL !< If true, calculate the bottom boundary layer properties.
 
 
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), target :: weight_u, slope_u, denom_u
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), target :: weight_v, slope_v, denom_v
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), target :: phys_u, slope_u, denom_u, coord_u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), target :: phys_v, slope_v, denom_v, coord_v
 
   integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
   logical :: use_ice_shelf ! Needed for selecting the right ALE interface.
@@ -1144,13 +1145,15 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
       call create_group_pass(pass_T_S_h, h, G%Domain, halo=2)
       call do_group_pass(pass_T_S_h, G%Domain)
 
-      if (CS%IDs%id_adapt_weight_u > 0) diag_CS%weight_u => weight_u
-      if (CS%IDs%id_adapt_weight_v > 0) diag_CS%weight_v => weight_v
+      if (CS%IDs%id_adapt_phys_u > 0) diag_CS%phys_u => phys_u
+      if (CS%IDs%id_adapt_phys_v > 0) diag_CS%phys_v => phys_v
 
       if (CS%IDs%id_adapt_slope_u > 0) diag_CS%slope_u => slope_u
       if (CS%IDs%id_adapt_slope_v > 0) diag_CS%slope_v => slope_v
       if (CS%IDs%id_adapt_denom_u > 0) diag_CS%denom_u => denom_u
       if (CS%IDs%id_adapt_denom_v > 0) diag_CS%denom_v => denom_v
+      if (CS%IDs%id_adapt_coord_u > 0) diag_CS%coord_u => coord_u
+      if (CS%IDs%id_adapt_coord_v > 0) diag_CS%coord_v => coord_v
 
       call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
 
@@ -1168,13 +1171,15 @@ subroutine step_MOM_thermo(MS, CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_t
         call ALE_main(G, GV, h, u, v, tv, CS%tracer_Reg, CS%ALE_CSp, dtdia, diag_CS=diag_CS)
       endif
 
-      if (CS%IDs%id_adapt_weight_u > 0) call post_data(CS%IDs%id_adapt_weight_u, weight_u, CS%diag)
-      if (CS%IDs%id_adapt_weight_v > 0) call post_data(CS%IDs%id_adapt_weight_v, weight_v, CS%diag)
+      if (CS%IDs%id_adapt_phys_u > 0) call post_data(CS%IDs%id_adapt_phys_u, phys_u, CS%diag)
+      if (CS%IDs%id_adapt_phys_v > 0) call post_data(CS%IDs%id_adapt_phys_v, phys_v, CS%diag)
 
       if (CS%IDs%id_adapt_slope_u > 0) call post_data(CS%IDs%id_adapt_slope_u, slope_u, CS%diag)
       if (CS%IDs%id_adapt_slope_v > 0) call post_data(CS%IDs%id_adapt_slope_v, slope_v, CS%diag)
       if (CS%IDs%id_adapt_denom_u > 0) call post_data(CS%IDs%id_adapt_denom_u, denom_u, CS%diag)
       if (CS%IDs%id_adapt_denom_v > 0) call post_data(CS%IDs%id_adapt_denom_v, denom_v, CS%diag)
+      if (CS%IDs%id_adapt_coord_u > 0) call post_data(CS%IDs%id_adapt_coord_u, coord_u, CS%diag)
+      if (CS%IDs%id_adapt_coord_v > 0) call post_data(CS%IDs%id_adapt_coord_v, coord_v, CS%diag)
 
       if (showCallTree) call callTree_waypoint("finished ALE_main (step_MOM_thermo)")
       call cpu_clock_end(id_clock_ALE)
@@ -2463,11 +2468,10 @@ subroutine register_diags(Time, G, GV, IDs, diag, missing)
   IDs%id_ssh_inst = register_diag_field('ocean_model', 'SSH_inst', diag%axesT1, &
        Time, 'Instantaneous Sea Surface Height', 'm', missing)
 
-  IDs%id_adapt_weight_u = register_diag_field('ocean_model', 'adapt_weight_u', diag%axesCui, Time, &
-       'Adaptive coordinate weighting on u-points')
-  IDs%id_adapt_weight_v = register_diag_field('ocean_model', 'adapt_weight_v', diag%axesCvi, Time, &
-       'Adaptive coordinate weighting on v-points')
-
+  IDs%id_adapt_phys_u = register_diag_field('ocean_model', 'adapt_phys_u', diag%axesCui, Time, &
+       'Adaptive coordinate physical slope on u-points')
+  IDs%id_adapt_phys_v = register_diag_field('ocean_model', 'adapt_phys_v', diag%axesCvi, Time, &
+       'Adaptive coordinate physical slope on v-points')
   IDs%id_adapt_slope_u = register_diag_field('ocean_model', 'adapt_slope_u', diag%axesCui, Time, &
        'Adaptive coordinate slope on u-points')
   IDs%id_adapt_slope_v = register_diag_field('ocean_model', 'adapt_slope_v', diag%axesCvi, Time, &
@@ -2476,6 +2480,10 @@ subroutine register_diags(Time, G, GV, IDs, diag, missing)
        'Adaptive coordinate denom on u-points')
   IDs%id_adapt_denom_v = register_diag_field('ocean_model', 'adapt_denom_v', diag%axesCvi, Time, &
        'Adaptive coordinate denom on v-points')
+  IDs%id_adapt_coord_u = register_diag_field('ocean_model', 'adapt_coord_u', diag%axesCui, Time, &
+       'Adaptive coordinate along-coordinate slope on u-points')
+  IDs%id_adapt_coord_v = register_diag_field('ocean_model', 'adapt_coord_v', diag%axesCvi, Time, &
+       'Adaptive coordinate along-coordinate slope on v-points')
 
 end subroutine register_diags
 
