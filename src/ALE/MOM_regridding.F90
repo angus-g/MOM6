@@ -1520,6 +1520,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real :: dj_sig, dj_sig_up, dj_sig_dn
   ! difference quantities interpolated to other locations
   real :: hdj_sig_u, hdi_sig_v, dk_sig_u, dk_sig_v
+  real :: ts_ratio
 
   ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag
@@ -1547,6 +1548,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0.
   dz_a(:,:,nz+1) = 0.
+
+  ts_ratio = dt / CS%adapt_CS%adaptTimescale
+  ts_ratio = min(ts_ratio, 1.0)
 
   ! zero out diagnostic arrays
   if (do_diag) then
@@ -1682,7 +1686,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         if (do_diag .and. associated(diag_CS%slope_u)) diag_CS%slope_u(I,j,K) = dz_i(I,j)
         ! to convert from the density gradient to the flux, flip the sign and multiply by
         ! kappa*dt
-        dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * dt / CS%adapt_CS%adaptTimescale
+        dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * ts_ratio
 
         if (do_diag .and. associated(diag_CS%denom_u)) &
              diag_CS%denom_u(I,j,K) = sqrt(i_denom) / (h_on_i(I,j,K) + GV%H_subroundoff)
@@ -1702,7 +1706,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         ! we also calculate the difference in pressure (interface position)
-        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * dt / CS%adapt_CS%adaptTimescale
+        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * ts_ratio
         ! dz_p_i positive => left is further down than right
         ! => move left up, right down
 
@@ -1780,7 +1784,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         if (do_diag .and. associated(diag_CS%slope_v)) diag_CS%slope_v(i,J,K) = dz_j(i,J)
         ! dz_j beforehand is unitless (ratio of densities)
-        dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * dt / CS%adapt_CS%adaptTimescale
+        dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * ts_ratio
         ! dz_j is now [m2]
         if (do_diag .and. associated(diag_CS%denom_v)) &
              diag_CS%denom_v(i,J,K) = sqrt(j_denom) / (h_on_j(i,J,K) + GV%H_subroundoff)
@@ -1799,7 +1803,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
 
-        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * dt / CS%adapt_CS%adaptTimescale
+        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio
 
         if (dz_p_j(i,J) < 0.) then
           dz_p_j(i,J) = max(dz_p_j(i,J), -0.125 * min( &
