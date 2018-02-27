@@ -18,6 +18,7 @@ use MOM_EOS, only : calculate_density, calculate_density_derivs, EOS_type
 use regrid_consts, only : coordinateMode, DEFAULT_COORDINATE_MODE
 use regrid_consts, only : REGRIDDING_LAYER, REGRIDDING_ZSTAR
 use regrid_consts, only : REGRIDDING_RHO, REGRIDDING_SIGMA
+use regrid_consts, only : REGRIDDING_ADAPTIVE
 
 implicit none ; private
 
@@ -107,6 +108,7 @@ subroutine DOME2d_initialize_thickness ( h, G, GV, param_file, just_read_params 
   real    :: min_thickness
   real    :: dome2d_width_bay, dome2d_width_bottom, dome2d_depth_bay
   logical :: just_read    ! If true, just read parameters but set nothing.
+  logical :: adaptZ
   character(len=40) :: verticalCoordinate
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
@@ -125,7 +127,8 @@ subroutine DOME2d_initialize_thickness ( h, G, GV, param_file, just_read_params 
   call get_param(param_file, mdl, "DOME2D_BASIN_WIDTH", dome2d_width_bottom, &
                  default=0.3, do_not_log=.true.)
   call get_param(param_file, mdl, "DOME2D_SHELF_DEPTH", dome2d_depth_bay, &
-                 default=0.2, do_not_log=.true.)
+       default=0.2, do_not_log=.true.)
+  call get_param(param_file, mdl, "DOME2D_ADAPT_Z", adaptZ, default=.true., do_not_log=.true.)
 
   if (just_read) return ! All run-time parameters have been read, so return.
 
@@ -139,6 +142,44 @@ subroutine DOME2d_initialize_thickness ( h, G, GV, param_file, just_read_params 
   do k=1,nz
     e0(k) = -G%max_depth * real(k-1) / real(nz)
   enddo
+
+  if (coordinateMode(verticalCoordinate) == REGRIDDING_ADAPTIVE) then
+    if (adaptZ) then
+      do j=js,je ; do i=is,ie
+        eta1D(nz+1) = -1.0*G%bathyT(i,j)
+        do k=nz,1,-1
+          eta1D(k) = e0(k)
+          if (eta1D(k) < (eta1D(k+1) + min_thickness)) then
+            eta1D(k) = eta1D(k+1) + min_thickness
+            h(i,j,k) = GV%m_to_H * min_thickness
+          else
+            h(i,j,k) = GV%m_to_H * (eta1D(k) - eta1D(k+1))
+          endif
+        enddo
+      enddo ; enddo
+    else
+      ! layered ic, probably needs to be used with acceleration to get a sane state
+      do j=js,je ; do i=is,ie
+        eta1D(nz+1) = -1.0*G%bathyT(i,j)
+        do k=nz,1,-1
+          eta1D(k) = e0(k)
+          if (eta1D(k) < (eta1D(k+1) + GV%Angstrom_z)) then
+            eta1D(k) = eta1D(k+1) + GV%Angstrom_z
+            h(i,j,k) = GV%Angstrom
+          else
+            h(i,j,k) = GV%m_to_H * (eta1D(k) - eta1D(k+1))
+          endif
+        enddo
+
+        x = ( G%geoLonT(i,j) - G%west_lon ) / G%len_lon
+        if ( x <= dome2d_width_bay ) then
+          h(i,j,1:nz-1) = GV%Angstrom
+          h(i,j,nz) = GV%m_to_H * dome2d_depth_bay * G%max_depth - (nz-1) * GV%Angstrom
+        endif
+
+      enddo ; enddo
+    endif
+  else
 
   select case ( coordinateMode(verticalCoordinate) )
 
@@ -211,7 +252,8 @@ subroutine DOME2d_initialize_thickness ( h, G, GV, param_file, just_read_params 
       call MOM_error(FATAL,"dome2d_initialize: "// &
       "Unrecognized i.c. setup - set REGRIDDING_COORDINATE_MODE")
 
-  end select
+    end select
+    endif
 
 end subroutine DOME2d_initialize_thickness
 
@@ -240,6 +282,7 @@ subroutine DOME2d_initialize_temperature_salinity ( T, S, h, G, GV, param_file, 
   logical :: just_read    ! If true, just read parameters but set nothing.
   character(len=40) :: verticalCoordinate
   real    :: dome2d_width_bay, dome2d_width_bottom, dome2d_depth_bay
+  logical :: adaptZ
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = G%ke
 
@@ -261,6 +304,7 @@ subroutine DOME2d_initialize_temperature_salinity ( T, S, h, G, GV, param_file, 
                 units='1e-3', default=2.0, do_not_log=just_read)
   call get_param(param_file, mdl,"T_RANGE",T_range,'Initial temperature range', &
                 units='1e-3', default=0.0, do_not_log=just_read)
+  call get_param(param_file, mdl, "DOME2D_ADAPT_Z", adaptZ, default=.true., do_not_log=.true.)
 
   if (just_read) return ! All run-time parameters have been read, so return.
 
@@ -269,6 +313,31 @@ subroutine DOME2d_initialize_temperature_salinity ( T, S, h, G, GV, param_file, 
 
   ! Linear salinity profile
 
+  if (coordinateMode(verticalCoordinate) == REGRIDDING_ADAPTIVE) then
+    if (adaptZ) then
+      do j=js,je ; do i=is,ie
+        xi0 = 0.0
+        do k = 1,nz
+          xi1 = xi0 + (GV%H_to_m * h(i,j,k)) / G%max_depth
+          S(i,j,k) = 34.0 + 0.5 * S_range * (xi0 + xi1)
+          xi0 = xi1
+        enddo
+      enddo ; enddo
+    else
+      do j=js,je ; do i=is,ie
+        xi0 = 0.0
+        do k = 1,nz
+          xi1 = xi0 + (GV%H_to_m * h(i,j,k)) / G%max_depth
+          S(i,j,k) = 34.0 + 0.5 * S_range * (xi0 + xi1)
+          xi0 = xi1
+        enddo
+        x = ( G%geoLonT(i,j) - G%west_lon ) / G%len_lon
+        if ( x <= dome2d_width_bay ) then
+          S(i,j,nz) = 34.0 + S_range
+        endif
+      enddo ; enddo
+    endif
+  else
   select case ( coordinateMode(verticalCoordinate) )
 
     case ( REGRIDDING_ZSTAR, REGRIDDING_SIGMA )
@@ -310,9 +379,11 @@ subroutine DOME2d_initialize_temperature_salinity ( T, S, h, G, GV, param_file, 
       "Unrecognized i.c. setup - set REGRIDDING_COORDINATE_MODE")
 
   end select
-
+endif
   ! Modify salinity and temperature when z coordinates are used
-  if ( coordinateMode(verticalCoordinate) .eq. REGRIDDING_ZSTAR ) then
+  !if ( coordinateMode(verticalCoordinate) .eq. REGRIDDING_ZSTAR .or. coordinateMode(verticalCoordinate) .eq. REGRIDDING_ADAPTIVE ) then
+if ( (coordinateMode(verticalCoordinate) .eq. REGRIDDING_ZSTAR) &
+     .or. ((coordinateMode(verticalCoordinate) .eq. REGRIDDING_ADAPTIVE) .and. adaptZ)) then
     index_bay_z = Nint ( dome2d_depth_bay * G%ke )
     do j = G%jsc,G%jec ; do i = G%isc,G%iec
       x = ( G%geoLonT(i,j) - G%west_lon ) / G%len_lon
@@ -337,7 +408,8 @@ subroutine DOME2d_initialize_temperature_salinity ( T, S, h, G, GV, param_file, 
   ! Modify temperature when rho coordinates are used
   T(G%isc:G%iec,G%jsc:G%jec,1:G%ke) = 0.0
   if (( coordinateMode(verticalCoordinate) .eq. REGRIDDING_RHO ) .or. &
-      ( coordinateMode(verticalCoordinate) .eq. REGRIDDING_LAYER )) then
+       ( coordinateMode(verticalCoordinate) .eq. REGRIDDING_LAYER ) .or. &
+       (( coordinateMode(verticalCoordinate) .eq. REGRIDDING_ADAPTIVE) .and. .not. adaptZ )) then
     do i = G%isc,G%iec ; do j = G%jsc,G%jec
       x = ( G%geoLonT(i,j) - G%west_lon ) / G%len_lon
       if ( x <= dome2d_width_bay ) then
