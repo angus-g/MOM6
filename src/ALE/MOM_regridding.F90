@@ -181,7 +181,7 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
   logical :: coord_is_state_dependent, ierr
   real :: filt_len, strat_tol, index_scale, tmpReal
   real :: dz_fixed_sfc, Rho_avg_depth, nlay_sfc_int
-  real :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau
+  real :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
   integer :: nz_fixed_sfc, k, nzf(4)
   real, dimension(:), allocatable :: dz     ! Resolution (thickness) in units of coordinate
   real, dimension(:), allocatable :: h_max  ! Maximum layer thicknesses, in m.
@@ -544,9 +544,14 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
          "Coordinate relaxation timescale", units="s-1", default=0.0)
     call get_param(param_file, mod, "ADAPT_MEAN_H", tmpLogical, &
          "Use mean rather than 'upstream' h in calculations", default=.false.)
+    call get_param(param_file, mod, "ADAPT_SLOPE_CUTOFF", adaptCutoff, &
+         "Slope cutoff between stratified and unstratified regions", default=1e-2)
+    call get_param(param_file, mod, "ADAPT_SMOOTH_MIN", adaptSmooth, &
+         "Minimum weight toward smoothing term", default=0.)
 
     call set_regrid_params(CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=tmpLogical)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=tmpLogical, &
+         adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth)
 
     call get_param(param_file, mod, "ADAPT_TWIN_GRADIENT", tmpLogical, &
          "Use twin gradient approach, requiring sign of gradient above\n"//&
@@ -1519,8 +1524,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real :: di_sig, di_sig_up, di_sig_dn
   real :: dj_sig, dj_sig_up, dj_sig_dn
   ! difference quantities interpolated to other locations
-  real :: hdj_sig_u, hdi_sig_v, dk_sig_u, dk_sig_v
-  real :: ts_ratio
+  real :: hdi_sig_u, hdj_sig_u, hdi_sig_v, hdj_sig_v, dk_sig_u, dk_sig_v
+  real :: ts_ratio, slope
 
   ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag
@@ -1671,11 +1676,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     do j = G%jsc-1,G%jec+1
       do I = G%isc-2,G%iec+1
         ! interpolate terms in the denominator onto the u-point
+        hdi_sig_u = hdi_sig(I,j,K)**2
         hdj_sig_u = 0.25 * ((hdj_sig(i,J,K)**2 + hdj_sig(i+1,J-1,K)**2) + &
              (hdj_sig(i+1,J,K)**2 + hdj_sig(i,J-1,K)**2))
         dk_sig_u = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i+1,j)**2)
 
-        i_denom = hdi_sig(I,j,K)**2 + hdj_sig_u + dk_sig_u
+        i_denom = hdi_sig_u + hdj_sig_u + dk_sig_u
         if (i_denom == 0.) then
           ! if gradients in all directions are exactly zero, we don't want any flux
           dz_i(I,j) = 0.
@@ -1722,14 +1728,17 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j))
         end if
 
-        ! diagnose weights
-        if (do_diag .and. associated(diag_CS%weight_u)) &
-             diag_CS%weight_u(I,j,K) = dk_sig_u / i_denom
+        ! calculate and diagnose along-coordinate slope
+        if (i_denom == 0.) then
+          slope = 1.0
+        else
+          slope = (hdi_sig_u + hdj_sig_u) / i_denom
+        endif
 
         ! calculate weighting between density and pressure terms
         ! by a cutoff value on the local normalised stratification
-        if (dk_sig_u / i_denom > 0.5) then
-          weight = 1.0 ; weight2 = 0.0
+        if (slope < CS%adapt_CS%adaptCutoff**2) then
+          weight = 1.0 - CS%adapt_CS%adaptSmooth; weight2 = CS%adapt_CS%adaptSmooth
         else
           weight = 0.0 ; weight2 = 1.0
         endif
@@ -1771,11 +1780,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! v-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-1,G%iec+1
+        hdj_sig_v = hdj_sig(i,J,K)**2
         hdi_sig_v = 0.25 * ((hdi_sig(I,j,K)**2 + hdi_sig(I-1,j+1,K)**2) + &
              (hdi_sig(I,j+1,K)**2 + hdi_sig(I-1,j,K)**2))
         dk_sig_v = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i,j+1)**2)
 
-        j_denom = hdj_sig(i,J,K)**2 + hdi_sig_v + dk_sig_v
+        j_denom = hdj_sig_v + hdi_sig_v + dk_sig_v
         if (j_denom == 0.) then
           dz_j(i,J) = 0.
         else
@@ -1815,12 +1825,15 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
 
-        ! diagnose weights
-        if (do_diag .and. associated(diag_CS%weight_v)) &
-             diag_CS%weight_v(i,J,K) = dk_sig_v / j_denom
+        ! diagnose along-coordinate slope
+        if (j_denom == 0.) then
+          slope = 1.0
+        else
+          slope = (hdi_sig_v + hdj_sig_v) / j_denom
+        endif
 
-        if (dk_sig_v / j_denom > 0.5) then
-          weight = 1.0 ; weight2 = 0.0
+        if (slope < CS%adapt_CS%adaptCutoff**2) then
+          weight = 1.0 - CS%adapt_CS%adaptSmooth ; weight2 = CS%adapt_CS%adaptSmooth
         else
           weight = 0.0 ; weight2 = 1.0
         endif
@@ -2484,7 +2497,8 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              compress_fraction, dz_min_surface, nz_fixed_surface, Rho_ML_avg_depth, &
              nlay_ML_to_interior, fix_haloclines, halocline_filt_len, &
              halocline_strat_tol, integrate_downward_for_e, &
-             adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin)
+             adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, &
+             adaptMean, adaptTwin, adaptCutoff, adaptSmooth)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2501,7 +2515,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_filt_len !< Length scale over which to filter T & S when looking for spuriously unstable water mass profiles (m)
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
-  real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau
+  real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
   logical, optional, intent(in) :: adaptMean, adaptTwin
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
@@ -2553,7 +2567,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth)
   end select
 
 end subroutine set_regrid_params

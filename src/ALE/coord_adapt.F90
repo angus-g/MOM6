@@ -45,6 +45,8 @@ type, public :: adapt_CS
   !> Coordinate relaxation coefficient/timescale
   real :: adaptTau = 0.0
 
+  real :: adaptCutoff, adaptSmooth
+
   logical :: mean_h = .false.
   logical :: twin_grad = .true.
 
@@ -84,9 +86,9 @@ subroutine end_coord_adapt(CS)
   deallocate(CS)
 end subroutine end_coord_adapt
 
-subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin)
+subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin, adaptCutoff, adaptSmooth)
   type(adapt_CS),    pointer    :: CS
-  real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau
+  real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
   logical, optional, intent(in) :: adaptMean, adaptTwin
 
   if (.not. associated(CS)) call MOM_error(FATAL, "set_adapt_params: CS not associated")
@@ -97,6 +99,8 @@ subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adap
   if (present(adaptTau)) CS%adaptTau = adaptTau
   if (present(adaptMean)) CS%mean_h = adaptMean
   if (present(adaptTwin)) CS%twin_grad = adaptTwin
+  if (present(adaptCutoff)) CS%adaptCutoff = adaptCutoff
+  if (present(adaptSmooth)) CS%adaptSmooth = adaptSmooth
 end subroutine set_adapt_params
 
 subroutine build_adapt_column(CS, G, GV, tv, i, j)
