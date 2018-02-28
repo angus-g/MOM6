@@ -31,6 +31,7 @@ use coord_slight, only : init_coord_slight, slight_CS, set_slight_params, build_
 use coord_adapt,  only : init_coord_adapt, adapt_CS, set_adapt_params, build_adapt_column, end_coord_adapt
 
 use coord_adapt, only : adapt_diag_CS
+use MOM_coms, only : reproducing_sum
 
 use netcdf ! Used by check_grid_def()
 
@@ -552,6 +553,11 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
     call set_regrid_params(CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
          adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=tmpLogical, &
          adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth)
+
+    call get_param(param_file, mod, "ADAPT_RESTORING_TIMESCALE", adaptTimescale, &
+         "Timescale for adaptivity restoring (default 10 days)", &
+         units="s", default=864000.0)
+    call set_regrid_params(CS, adaptRestoringTimescale=adaptTimescale)
 
     call get_param(param_file, mod, "ADAPT_TWIN_GRADIENT", tmpLogical, &
          "Use twin gradient approach, requiring sign of gradient above\n"//&
@@ -1506,7 +1512,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! temperature and salinity on interfaces
   real, dimension(SZI_(G),SZJ_(G)) :: t_int, s_int
   ! interface heights
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: z_int
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: z_int, z_new, h_int
   ! drho/dt and drho/ds on interfaces
   real, dimension(SZI_(G),SZJ_(G)) :: alpha_int, alpha_int_kp1
   real, dimension(SZI_(G),SZJ_(G)) :: beta_int, beta_int_kp1
@@ -1517,6 +1523,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real, dimension(SZI_(G),SZJ_(G)) :: dk_sig_int
   ! final change in interface height
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a
+
+  ! interface position after adaptivity, mean interface position across basin
+  real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd, dz_r
 
   ! numerator of density term and upstreamed h
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i, hdi_sig_phys
@@ -1531,6 +1540,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! difference quantities interpolated to other locations
   real :: hdi_sig_u, hdj_sig_u, hdi_sig_v, hdj_sig_v, dk_sig_u, dk_sig_v
   real :: ts_ratio, slope, phys_slope
+  real :: global_z_sum, global_h_sum
 
   ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag
@@ -1554,6 +1564,24 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   do K = nz, 1, -1
     z_int(:,:,K) = z_int(:,:,K+1) + h(:,:,k)
   enddo
+
+  ! calculate geometric mean of thicknesses on interfaces
+  ! we only need to do this in our own domain because this
+  ! is a global sum
+  z_new(:,:,1) = 0. ; z_new(:,:,nz+1) = 0.
+  h_int(:,:,1) = 0. ; h_int(:,:,nz+1) = 0.
+  do j = G%jsc,G%jec
+    do i = G%isc,G%iec
+      h_int(i,j,2:nz) = (h(i,j,2:nz) * h(i,j,1:nz-1)) / &
+           (h(i,j,2:nz) + h(i,j,1:nz-1) + GV%H_subroundoff)
+      h_int(i,j,2:nz) = (GV%H_to_m * h_int(i,j,2:nz)) * (G%areaT(i,j) * G%mask2dT(i,j))
+      ! weight height by thickness
+      z_new(i,j,2:nz) = z_int(i,j,2:nz) * h_int(i,j,2:nz)
+    enddo
+  enddo
+  global_z_sum = reproducing_sum(z_new, G%isc, G%iec, G%jsc, G%jec, sums=z_mean)
+  global_h_sum = reproducing_sum(h_int, G%isc, G%iec, G%jsc, G%jec, sums=h_col)
+  z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
 
   ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0.
@@ -1941,11 +1969,24 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       ! for land points, leave interfaces undisturbed
       if (G%bathyT(i,j) < 0.5) cycle
 
+      z_upd(:) = z_int(i,j,:) + dz_a(i,j,:)
+      dz_r(:) = (dt / CS%adapt_CS%restoringTimescale) * (z_mean(:) - z_upd(:))
+      dz_r(1) = 0. ; dz_r(nz+1) = 0.;
+      do K = nz,2,-1
+        ! sweep up through column, ensuring we don't run through interface below
+        ! XXX 1e-10 is to prevent negative thicknesses by roundoff
+        dz_r(K) = max(dz_r(K), -h(i,j,k) + dz_a(i,j,K+1) + dz_r(K+1) - dz_a(i,j,K) + 1e-10)
+      enddo
+
       ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
       ! we effectively add the depth of the ocean and immediately subtract it out, losing
       ! about 4-5 orders of magnitude!
       ! instead, we just apply the calculated value directly
       dzInterface(i,j,:) = dz_a(i,j,:)
+
+      ! add restoring term if we haven't disabled it by a negative timescale
+      if (CS%adapt_CS%restoringTimescale > 0) &
+           dzInterface(i,j,2:nz) = dzInterface(i,j,2:nz) + dz_r(2:nz)
     enddo
   enddo
 end subroutine build_grid_adaptive
@@ -2550,7 +2591,8 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              nlay_ML_to_interior, fix_haloclines, halocline_filt_len, &
              halocline_strat_tol, integrate_downward_for_e, &
              adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, &
-             adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope)
+             adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope, &
+             adaptRestoringTimescale)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2567,7 +2609,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_filt_len !< Length scale over which to filter T & S when looking for spuriously unstable water mass profiles (m)
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
-  real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
+  real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth, adaptRestoringTimescale
   logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
@@ -2619,7 +2661,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope, restoringTimescale=adaptRestoringTimescale)
   end select
 
 end subroutine set_regrid_params
