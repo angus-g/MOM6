@@ -1584,8 +1584,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
 
   ! the top and bottom interfaces don't move
-  dz_a(:,:,1) = 0.
-  dz_a(:,:,nz+1) = 0.
+  dz_a(:,:,1) = 0. ; dz_a(:,:,nz+1) = 0.
+  dz_r(1) = 0. ; dz_r(nz+1) = 0.
 
   ts_ratio = dt / CS%adapt_CS%adaptTimescale
   ts_ratio = min(ts_ratio, 1.0)
@@ -1970,8 +1970,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       if (G%bathyT(i,j) < 0.5) cycle
 
       z_upd(:) = z_int(i,j,:) + dz_a(i,j,:)
-      dz_r(:) = (dt / CS%adapt_CS%restoringTimescale) * (z_mean(:) - z_upd(:))
-      dz_r(1) = 0. ; dz_r(nz+1) = 0.;
+      do K = 2,nz
+        dz_r(K) = (dt / CS%adapt_CS%restoringTimescale) * &
+             (min(z_mean(K), -G%bathyT(i,j)) - z_upd(K))
+      enddo
+
       do K = nz,2,-1
         ! sweep up through column, ensuring we don't run through interface below
         ! XXX 1e-10 is to prevent negative thicknesses by roundoff
