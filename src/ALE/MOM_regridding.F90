@@ -1522,7 +1522,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! vertical gradient in sigma
   real, dimension(SZI_(G),SZJ_(G)) :: dk_sig_int
   ! final change in interface height
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a, dz_p
 
   ! interface position after adaptivity, mean interface position across basin
   real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd, dz_r
@@ -1585,6 +1585,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
   ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0. ; dz_a(:,:,nz+1) = 0.
+  dz_p(:,:,1) = 0. ; dz_p(:,:,nz+1) = 0.
   dz_r(1) = 0. ; dz_r(nz+1) = 0.
 
   ts_ratio = dt / CS%adapt_CS%adaptTimescale
@@ -1801,9 +1802,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         ! calculate weighting between density and pressure terms
         ! by a cutoff value on the local normalised stratification
         if (slope < CS%adapt_CS%adaptCutoff**2) then
-          weight = 1.0 - CS%adapt_CS%adaptSmooth; weight2 = CS%adapt_CS%adaptSmooth
+          weight = 1.0 - CS%adapt_CS%adaptSmooth; weight2 = 0.
         else
-          weight = 0.0 ; weight2 = 1.0
+          weight = 0.0 ; weight2 = 1.0 - CS%adapt_CS%adaptSmooth
         endif
 
         ! override weights if required
@@ -1913,9 +1914,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         if (CS%adapt_CS%physicalSlope) slope = phys_slope
 
         if (slope < CS%adapt_CS%adaptCutoff**2) then
-          weight = 1.0 - CS%adapt_CS%adaptSmooth ; weight2 = CS%adapt_CS%adaptSmooth
+          weight = 1.0 - CS%adapt_CS%adaptSmooth ; weight2 = 0.
         else
-          weight = 0.0 ; weight2 = 1.0
+          weight = 0.0 ; weight2 = 1.0 - CS%adapt_CS%adaptSmooth
         endif
 
         ! override weights if required
@@ -1959,6 +1960,60 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_a(i,j,K) = 0.25 * G%IareaT(i,j) &
              * ((G%dyCu(I,j) * dz_i(I,j) - G%dyCu(I-1,j) * dz_i(I-1,j)) &
              + (G%dxCv(i,J) * dz_j(i,J) - G%dxCv(i,J-1) * dz_j(i,J-1)))
+
+        ! apply the change in interface position due to this flux immediately
+        z_int(i,j,K) = z_int(i,j,K) + dz_a(i,j,K)
+      end do
+    end do
+
+    ! calculate the z-smoothing fluxes and apply in a second step
+    ! this lets us use a "barotropic" limiter, which should be much less
+    ! restrictive than the layer-based one
+    do j = G%jsc-1,G%jec+1
+      do I = G%isc-2,G%iec+1
+        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * ts_ratio
+        ! dz_p_i positive => left is further down than right
+        ! => move left up, right down
+
+        ! XXX this becomes a barotropic limiter
+        if (dz_p_i(I,j) < 0.) then
+          ! dz_p_i negative -- right up, left down
+          dz_p_i(I,j) = max(dz_p_i(I,j), -min( &
+               (z_int(i,j,K) - z_int(i,j,nz+1)) * G%areaT(i,j), &
+               (z_int(i+1,j,1) - z_int(i+1,j,K)) * G%areaT(i+1,j)) * G%IdyCu(I,j))
+        else
+          ! dz_p_i positive -- left up, right down
+          dz_p_i(I,j) = min(dz_p_i(I,j), min( &
+               (z_int(i,j,1) - z_int(i,j,K)) * G%areaT(i,j), &
+               (z_int(i+1,j,K) - z_int(i+1,j,nz+1)) * G%areaT(i+1,j)) * G%IdyCu(I,j))
+        end if
+        dz_p_i(I,j) = dz_p_i(I,j) * CS%adapt_CS%adaptSmooth
+      end do
+    end do
+
+    do J = G%jsc-2,G%jec+1
+      do i = G%isc-1,G%iec+1
+        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio
+
+        if (dz_p_j(i,J) < 0.) then
+          dz_p_j(i,J) = max(dz_p_j(i,J), -min( &
+               (z_int(i,j,K) - z_int(i,j,nz+1)) * G%areaT(i,j), &
+               (z_int(i,j+1,1) - z_int(i,j+1,K)) * G%areaT(i,j+1)) * G%IdxCv(i,J))
+        else
+          dz_p_j(i,J) = min(dz_p_j(i,J), min( &
+               (z_int(i,j,1) - z_int(i,j,K)) * G%areaT(i,j), &
+               (z_int(i,j+1,K) - z_int(i,j+1,nz+1)) * G%areaT(i,j+1)) * G%IdxCv(i,J))
+        end if
+        dz_p_j(i,J) = dz_p_j(i,J) * CS%adapt_CS%adaptSmooth
+      end do
+    end do
+
+    ! calculate flux due to barotropically-limited smoothing term
+    do j = G%jsc-1,G%jec+1
+      do i = G%isc-1,G%iec+1
+        dz_p(i,j,K) = 0.25 * G%IareaT(i,j) &
+             * ((G%dyCu(I,j) * dz_p_i(I,j) - G%dyCu(I-1,j) * dz_p_i(I-1,j)) &
+             + (G%dxCv(i,J) * dz_p_j(i,J) - G%dxCv(i,J-1) * dz_p_j(i,J-1)))
       end do
     end do
   end do
@@ -1969,23 +2024,25 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       ! for land points, leave interfaces undisturbed
       if (G%bathyT(i,j) < 0.5) cycle
 
-      z_upd(:) = z_int(i,j,:) + dz_a(i,j,:)
+      ! z_int has already been updated by layer-limited fluxes
+      z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
       do K = 2,nz
         dz_r(K) = (dt / CS%adapt_CS%restoringTimescale) * &
-             (min(z_mean(K), -G%bathyT(i,j)) - z_upd(K))
+             (max(z_mean(K), -G%bathyT(i,j)) - z_upd(K))
       enddo
 
       do K = nz,2,-1
         ! sweep up through column, ensuring we don't run through interface below
-        ! XXX 1e-10 is to prevent negative thicknesses by roundoff
-        dz_r(K) = max(dz_r(K), -h(i,j,k) + dz_a(i,j,K+1) + dz_r(K+1) - dz_a(i,j,K) + 1e-10)
+        dz_r(K) = max(dz_r(K), -h(i,j,k) + (dz_a(i,j,K+1) + dz_p(i,j,K+1) + dz_r(K+1)) &
+             - (dz_a(i,j,K) - dz_p(i,j,K)))
       enddo
 
       ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
       ! we effectively add the depth of the ocean and immediately subtract it out, losing
       ! about 4-5 orders of magnitude!
       ! instead, we just apply the calculated value directly
-      dzInterface(i,j,:) = dz_a(i,j,:)
+      ! combine both the layer-limited and barotropically-limited fluxes
+      dzInterface(i,j,:) = dz_a(i,j,:) + dz_p(i,j,:)
 
       ! add restoring term if we haven't disabled it by a negative timescale
       if (CS%adapt_CS%restoringTimescale > 0) &
