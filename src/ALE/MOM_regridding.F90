@@ -2011,7 +2011,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate flux due to barotropically-limited smoothing term
     do j = G%jsc-1,G%jec+1
       do i = G%isc-1,G%iec+1
-        dz_p(i,j,K) = 0.25 * G%IareaT(i,j) &
+        dz_p(i,j,K) = 0.5 * 0.25 * G%IareaT(i,j) &
              * ((G%dyCu(I,j) * dz_p_i(I,j) - G%dyCu(I-1,j) * dz_p_i(I-1,j)) &
              + (G%dxCv(i,J) * dz_p_j(i,J) - G%dxCv(i,J-1) * dz_p_j(i,J-1)))
       end do
