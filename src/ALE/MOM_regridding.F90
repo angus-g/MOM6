@@ -1719,6 +1719,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! u-points
     do j = G%jsc-1,G%jec+1
       do I = G%isc-2,G%iec+1
+        if (G%mask2dCu(I,j) < 0.5) then
+          dz_i(I,j) = 0.
+          cycle
+        endif
+
         ! interpolate terms in the denominator onto the u-point
         hdi_sig_u = hdi_sig(I,j,K)**2
         hdj_sig_u = 0.25 * ((hdj_sig(i,J,K)**2 + hdj_sig(i+1,J-1,K)**2) + &
@@ -1844,6 +1849,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! v-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-1,G%iec+1
+        if (G%mask2dCv(i,J)< 0.5) then
+          dz_j(i,J) = 0.
+          cycle
+        endif
+
         hdj_sig_v = hdj_sig(i,J,K)**2
         hdi_sig_v = 0.25 * ((hdi_sig(I,j,K)**2 + hdi_sig(I-1,j+1,K)**2) + &
              (hdi_sig(I,j+1,K)**2 + hdi_sig(I-1,j,K)**2))
@@ -1953,7 +1963,6 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
     do j = G%jsc-1,G%jec+1
       do i = G%isc-1,G%iec+1
-        if (G%bathyT(i,j) < 0.5) cycle
         ! prior to this point, dz_a and dz_p should be limited such that they
         ! can't cause any tangling. however, they may still lead to some grid-scale
         ! checkerboarding, so we reduce by another factor of 2
@@ -1971,6 +1980,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! restrictive than the layer-based one
     do j = G%jsc-1,G%jec+1
       do I = G%isc-2,G%iec+1
+        if (G%mask2dCu(I,j) < 0.5) then
+          dz_p_i(I,j) = 0.
+          cycle
+        endif
+
         dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * ts_ratio
         ! dz_p_i positive => left is further down than right
         ! => move left up, right down
@@ -1993,6 +2007,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
     do J = G%jsc-2,G%jec+1
       do i = G%isc-1,G%iec+1
+        if (G%mask2dCv(i,J) < 0.5) then
+          dz_p_j(i,J) = 0.
+          cycle
+        endif
+
         dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio
 
         if (dz_p_j(i,J) < 0.) then
@@ -2021,8 +2040,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   do j = G%jsc-1,G%jec+1
     do i = G%isc-1,G%iec+1
       dzInterface(i,j,:) = 0.
-      ! for land points, leave interfaces undisturbed
-      if (G%bathyT(i,j) < 0.5) cycle
+      ! for land points, leave interfaces undisturbed (possibly doesn't matter)
+      if (G%mask2dT(i,j) < 0.5) cycle
 
       ! z_int has already been updated by layer-limited fluxes
       z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
