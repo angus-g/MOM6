@@ -1568,10 +1568,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! calculate geometric mean of thicknesses on interfaces
   ! we only need to do this in our own domain because this
   ! is a global sum
-  z_new(:,:,1) = 0. ; z_new(:,:,nz+1) = 0.
-  h_int(:,:,1) = 0. ; h_int(:,:,nz+1) = 0.
-  do j = G%jsc,G%jec
-    do i = G%isc,G%iec
+  z_new(:,:,:) = 0. ;  h_int(:,:,:) = 0.
+  do j = G%jsc-1,G%jec+1
+    do i = G%isc-1,G%iec+1
       h_int(i,j,2:nz) = (h(i,j,2:nz) * h(i,j,1:nz-1)) / &
            (h(i,j,2:nz) + h(i,j,1:nz-1) + GV%H_subroundoff)
       h_int(i,j,2:nz) = (GV%H_to_m * h_int(i,j,2:nz)) * (G%areaT(i,j) * G%mask2dT(i,j))
@@ -1579,8 +1578,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       z_new(i,j,2:nz) = z_int(i,j,2:nz) * h_int(i,j,2:nz)
     enddo
   enddo
-  global_z_sum = reproducing_sum(z_new, G%isc, G%iec, G%jsc, G%jec, sums=z_mean)
-  global_h_sum = reproducing_sum(h_int, G%isc, G%iec, G%jsc, G%jec, sums=h_col)
+  global_z_sum = reproducing_sum(z_new, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=z_mean)
+  global_h_sum = reproducing_sum(h_int, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=h_col)
   z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
 
   ! the top and bottom interfaces don't move
@@ -2046,15 +2045,14 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       ! z_int has already been updated by layer-limited fluxes
       z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
       do K = 2,nz
-        dz_r(K) = (dt / CS%adapt_CS%restoringTimescale) * &
-             (max(z_mean(K), -G%bathyT(i,j)) - z_upd(K))
-      enddo
+        dz_r(K) = (dt / CS%adapt_CS%restoringTimescale) * (z_mean(K) - z_upd(K))
 
-      do K = nz,2,-1
-        ! sweep up through column, ensuring we don't run through interface below
-        dz_r(K) = max(dz_r(K), -h(i,j,k) + (dz_a(i,j,K+1) + dz_p(i,j,K+1) + dz_r(K+1)) &
-             - (dz_a(i,j,K) - dz_p(i,j,K)))
-      enddo
+        if (dz_r(K) < 0.) then
+          dz_r(K) = max(dz_r(K), -min(z_upd(K) - z_upd(nz+1), z_upd(1) - z_upd(K)))
+        else
+          dz_r(K) = min(dz_r(K), min(z_upd(1) - z_upd(K), z_upd(K) - z_upd(nz+1)))
+        end if
+      end do
 
       ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
       ! we effectively add the depth of the ocean and immediately subtract it out, losing
@@ -2065,7 +2063,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
       ! add restoring term if we haven't disabled it by a negative timescale
       if (CS%adapt_CS%restoringTimescale > 0) &
-           dzInterface(i,j,2:nz) = dzInterface(i,j,2:nz) + dz_r(2:nz)
+           dzInterface(i,j,:) = dzInterface(i,j,:) + dz_r(:)
     enddo
   enddo
 end subroutine build_grid_adaptive
