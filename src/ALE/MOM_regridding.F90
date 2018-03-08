@@ -2036,6 +2036,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     end do
   end do
 
+  ts_ratio = dt / CS%adapt_CS%restoringTimescale
+
   do j = G%jsc-1,G%jec+1
     do i = G%isc-1,G%iec+1
       dzInterface(i,j,:) = 0.
@@ -2043,15 +2045,13 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       if (G%mask2dT(i,j) < 0.5) cycle
 
       ! z_int has already been updated by layer-limited fluxes
+      ! add the barotropically limited flux too
       z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
-      do K = 2,nz
-        dz_r(K) = (dt / CS%adapt_CS%restoringTimescale) * (z_mean(K) - z_upd(K))
 
-        if (dz_r(K) < 0.) then
-          dz_r(K) = max(dz_r(K), -min(z_upd(K) - z_upd(nz+1), z_upd(1) - z_upd(K)))
-        else
-          dz_r(K) = min(dz_r(K), min(z_upd(1) - z_upd(K), z_upd(K) - z_upd(nz+1)))
-        end if
+      ! calculate change in interface position due to restoring term
+      do K = 2,nz
+        dz_r(K) = ts_ratio * (max(min(z_mean(K), z_upd(1)), z_upd(nz+1)) - z_upd(K)) &
+             / (1.0 + ts_ratio)
       end do
 
       ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
