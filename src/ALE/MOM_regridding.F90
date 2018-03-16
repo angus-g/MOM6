@@ -32,6 +32,7 @@ use coord_adapt,  only : init_coord_adapt, adapt_CS, set_adapt_params, build_ada
 
 use coord_adapt, only : adapt_diag_CS
 use MOM_coms, only : reproducing_sum
+use MOM_spatial_means, only : adjust_area_mean_to_zero
 
 use netcdf ! Used by check_grid_def()
 
@@ -1522,10 +1523,10 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! vertical gradient in sigma
   real, dimension(SZI_(G),SZJ_(G)) :: dk_sig_int
   ! final change in interface height
-  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a, dz_p
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a, dz_p, dz_r
 
   ! interface position after adaptivity, mean interface position across basin
-  real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd, dz_r
+  real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd
 
   ! numerator of density term and upstreamed h
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i, hdi_sig_phys
@@ -1585,7 +1586,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0. ; dz_a(:,:,nz+1) = 0.
   dz_p(:,:,1) = 0. ; dz_p(:,:,nz+1) = 0.
-  dz_r(1) = 0. ; dz_r(nz+1) = 0.
+  dz_r(:,:,1) = 0. ; dz_r(:,:,nz+1) = 0.
 
   ts_ratio = dt / CS%adapt_CS%adaptTimescale
   ts_ratio = min(ts_ratio, 1.0)
@@ -2044,13 +2045,13 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       ! for land points, leave interfaces undisturbed (possibly doesn't matter)
       if (G%mask2dT(i,j) < 0.5) cycle
 
-      ! z_int has already been updated by layer-limited fluxes
-      ! add the barotropically limited flux too
-      z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
-
       ! calculate change in interface position due to restoring term
       do K = 2,nz
-        dz_r(K) = ts_ratio * (max(min(z_mean(K), z_upd(1)), z_upd(nz+1)) - z_upd(K)) &
+        ! z_int has already been updated by layer-limited fluxes
+        ! add the barotropically limited flux too
+        z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
+
+        dz_r(i,j,K) = ts_ratio * (max(min(z_mean(K), z_upd(1)), z_upd(nz+1)) - z_upd(K)) &
              / (1.0 + ts_ratio)
       end do
 
@@ -2060,12 +2061,16 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       ! instead, we just apply the calculated value directly
       ! combine both the layer-limited and barotropically-limited fluxes
       dzInterface(i,j,:) = dz_a(i,j,:) + dz_p(i,j,:)
-
-      ! add restoring term if we haven't disabled it by a negative timescale
-      if (CS%adapt_CS%restoringTimescale > 0) &
-           dzInterface(i,j,:) = dzInterface(i,j,:) + dz_r(:)
     enddo
   enddo
+
+  ! add restoring term if we haven't disabled it by a negative timescale
+  if (CS%adapt_CS%restoringTimescale > 0) then
+    do K = 2,nz
+      call adjust_area_mean_to_zero(dz_r(:,:,K), G)
+      dzInterface(:,:,K) = dzInterface(:,:,K) + dz_r(:,:,K)
+    enddo
+  endif
 end subroutine build_grid_adaptive
 
 !> Builds a grid that tracks density interfaces for water that is denser than
