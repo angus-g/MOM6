@@ -1604,6 +1604,13 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   global_h_sum = reproducing_sum(h_int, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=h_col)
   z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
 
+  do K = 2,nz-1
+     if (z_mean(K) < z_mean(K+1)) then
+        print *, z_mean
+        call MOM_error(FATAL, 'tangled z_mean')
+     endif
+  enddo
+
   ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0. ; dz_a(:,:,nz+1) = 0.
   dz_p(:,:,1) = 0. ; dz_p(:,:,nz+1) = 0.
