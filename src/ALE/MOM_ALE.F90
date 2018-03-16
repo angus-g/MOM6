@@ -625,7 +625,7 @@ end subroutine ALE_build_grid
 !! repeatedly applying the grid calculation algorithm
 subroutine ALE_regrid_accelerated(CS, G, GV, h, tv, n, u, v, Reg, dt, dzRegrid, initial)
   type(ALE_CS),                      pointer, intent(in)    :: CS     !< ALE control structure
-  type(ocean_grid_type),                      intent(inout) :: G      !< Ocean grid
+  type(ocean_grid_type),                      intent(in)    :: G      !< Ocean grid
   type(verticalGrid_type),                    intent(in)    :: GV     !< Vertical grid
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),  intent(inout) :: h !< Original thicknesses
   type(thermo_var_ptrs),                      intent(inout) :: tv     !< Thermo vars (T/S/EOS)
