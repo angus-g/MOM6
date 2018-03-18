@@ -1593,7 +1593,10 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     do i = G%isc-1,G%iec+1
       h_int(i,j,2:nz) = (h(i,j,2:nz) * h(i,j,1:nz-1)) / &
            (h(i,j,2:nz) + h(i,j,1:nz-1) + GV%H_subroundoff)
-      h_int(i,j,2:nz) = (GV%H_to_m * h_int(i,j,2:nz)) * (G%areaT(i,j) * G%mask2dT(i,j))
+      ! we don't really want to volume-weight this, we just want to discount vanished layers
+      ! this way, we won't bias towards thick layers
+      h_int(i,j,2:nz) = max(GV%H_to_m * h_int(i,j,2:nz), 1.0)
+      h_int(i,j,2:nz) = h_int(i,j,2:nz) * (G%areaT(i,j) * G%mask2dT(i,j))
       ! weight height by thickness
       z_new(i,j,2:nz) = z_int(i,j,2:nz) * h_int(i,j,2:nz)
     enddo
