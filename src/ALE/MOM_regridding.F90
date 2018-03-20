@@ -926,7 +926,7 @@ subroutine check_remapping_grid( G, GV, h, dzInterface, msg )
 end subroutine check_remapping_grid
 
 !> Check that the total thickness of new and old grids are consistent
-subroutine check_grid_column( nk, depth, h, dzInterface, msg, i, j, dzInterfacePrev, is_fatal )
+subroutine check_grid_column( nk, depth, h, dzInterface, msg, i, j, dzInterfacePrev, is_fatal, was_valid )
   integer,               intent(in) :: nk !< Number of cells
   real,                  intent(in) :: depth !< Depth of bottom (m)
   real, dimension(nk),   intent(in) :: h !< Cell thicknesses (m)
@@ -935,6 +935,7 @@ subroutine check_grid_column( nk, depth, h, dzInterface, msg, i, j, dzInterfaceP
   integer, intent(in) :: i, j !< index of column in question
   real, dimension(nk+1), intent(in), optional :: dzInterfacePrev
   logical, intent(in), optional :: is_fatal
+  logical, intent(out), optional :: was_valid
   ! Local variables
   integer :: k, k2, level
   real    :: eps, total_h_old, total_h_new, h_new, z_old, z_new
@@ -944,6 +945,7 @@ subroutine check_grid_column( nk, depth, h, dzInterface, msg, i, j, dzInterfaceP
   ! so we don't want those to be fatal
   level = FATAL
   if (present(is_fatal) .and. .not. is_fatal) level = WARNING
+  if (present(was_valid)) was_valid = .true.
 
   eps =1. ; eps = epsilon(eps)
 
@@ -971,6 +973,8 @@ subroutine check_grid_column( nk, depth, h, dzInterface, msg, i, j, dzInterfaceP
           write(0,*) 'dzIP,hnewP=',dzInterfacePrev(k2),h(k2)+(dzInterfacePrev(k2)-dzInterfacePrev(k2+1))
         endif
       enddo
+
+      if (present(was_valid)) was_valid = .false.
 
       call MOM_error( level, 'MOM_regridding, check_grid_column: '//&
         'Negative layer thickness implied by re-gridding, '//trim(msg))
@@ -1562,7 +1566,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real :: global_z_sum, global_h_sum
 
   ! whether we need to provide diagnostics out to the calling routine
-  logical :: do_diag
+  logical :: do_diag, valid
 
 #ifdef __DO_SAFETY_CHECKS__
   real :: total_thickness, dh
@@ -2081,24 +2085,41 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         dz_r(i,j,K) = ts_ratio * (max(min(z_mean(K), z_upd(1)), z_upd(nz+1)) - z_upd(K)) &
              / (1.0 + ts_ratio)
-      end do
 
-      ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
-      ! we effectively add the depth of the ocean and immediately subtract it out, losing
-      ! about 4-5 orders of magnitude!
-      ! instead, we just apply the calculated value directly
-      ! combine both the layer-limited and barotropically-limited fluxes
-      dzInterface(i,j,:) = dz_a(i,j,:) + dz_p(i,j,:)
+        ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
+        ! we effectively add the depth of the ocean and immediately subtract it out, losing
+        ! about 4-5 orders of magnitude!
+        ! instead, we just apply the calculated value directly
+        ! combine both the layer-limited and barotropically-limited fluxes
+        dzInterface(i,j,K) = dz_a(i,j,K) + dz_p(i,j,K)
+
+        if (CS%adapt_CS%restoringTimescale > 0) &
+             dzInterface(i,j,K) = dzInterface(i,j,K) + dz_r(i,j,K)
+     enddo
     enddo
   enddo
 
   ! add restoring term if we haven't disabled it by a negative timescale
-  if (CS%adapt_CS%restoringTimescale > 0) then
-    do K = 2,nz
-      call adjust_area_mean_to_zero(dz_r(:,:,K), G)
-      dzInterface(:,:,K) = dzInterface(:,:,K) + dz_r(:,:,K)
-    enddo
-  endif
+  ! if (CS%adapt_CS%restoringTimescale > 0) then
+  !   do K = 2,nz
+  !     !call adjust_area_mean_to_zero(dz_r(:,:,K), G)
+  !     dzInterface(:,:,K) = dzInterface(:,:,K) + dz_r(:,:,K)
+  !   enddo
+  ! endif
+
+  do j = G%jsc-1,G%jec+1
+     do i = G%isc-1,G%iec+1
+        call check_grid_column(nz, G%bathyT(i,j), h(i,j,:), dzInterface(i,j,:), 'in build_grid_adaptive', i, j, is_fatal=.false., was_valid=valid)
+
+        if (.not. valid) then
+           z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
+
+           do K = 1,nz+1
+              write (0,*) 'k,z_int,z_upd,z_mean,z_mean(lim),dz_r', K, z_int(i,j,K), z_upd(K), z_mean(K), max(min(z_mean(K), z_upd(1)), z_upd(nz+1)), dz_r(i,j,K)
+           enddo
+        endif
+     enddo
+  enddo
 end subroutine build_grid_adaptive
 
 !> Builds a grid that tracks density interfaces for water that is denser than
