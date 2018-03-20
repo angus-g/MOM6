@@ -18,7 +18,7 @@ use MOM_io,                   only : vardesc, query_vardesc, var_desc
 use MOM_restart,              only : register_restart_field, MOM_restart_CS
 use MOM_obsolete_params,      only : obsolete_logical, obsolete_int, obsolete_real, obsolete_char
 use MOM_string_functions,     only : extract_word, remove_spaces
-use MOM_tracer_registry,      only : tracer_registry_type
+use MOM_tracer_registry,      only : tracer_type, tracer_registry_type, tracer_name_lookup
 use MOM_variables,            only : thermo_var_ptrs
 use time_interp_external_mod, only : init_external_field, time_interp_external
 use time_interp_external_mod, only : time_interp_external_init
@@ -86,7 +86,9 @@ type, public :: OBC_segment_tracer_type
   real, dimension(:,:,:), pointer :: t          => NULL()  !< tracer concentration array
   real                            :: OBC_inflow_conc = 0.0 !< tracer concentration for generic inflows
   character(len=32)               :: name                  !< tracer name used for error messages
-  type(vardesc), pointer          :: vd         => NULL()  !< metadata describing the tracer
+  type(tracer_type), pointer      :: Tr         => NULL()  !< metadata describing the tracer
+  real, dimension(:,:,:), pointer :: tres       => NULL()  !< tracer reservoir array
+  logical                         :: is_initialized        !< reservoir values have been set when True
 end type OBC_segment_tracer_type
 
 !> Registry type for tracers on segments
@@ -119,8 +121,8 @@ type, public :: OBC_segment_type
   integer :: Ie_obc         !< i-indices of boundary segment.
   integer :: Js_obc         !< j-indices of boundary segment.
   integer :: Je_obc         !< j-indices of boundary segment.
-  real :: Tnudge_in         !< Inverse nudging timescale on inflow (1/s).
-  real :: Tnudge_out        !< Inverse nudging timescale on outflow (1/s).
+  real :: Velocity_nudging_timescale_in  !< Inverse nudging timescale on inflow (1/s).
+  real :: Velocity_nudging_timescale_out !< Inverse nudging timescale on outflow (1/s).
   logical :: on_pe          !< true if segment is located in the computational domain
   logical :: temp_segment_data_exists !< true if temperature data arrays are present
   logical :: salt_segment_data_exists !< true if salinity data arrays are present
@@ -145,6 +147,11 @@ type, public :: OBC_segment_type
                                                             !! that values should be nudged towards (m s-1).
   type(segment_tracer_registry_type), pointer  :: tr_Reg=> NULL()!< A pointer to the tracer registry for the segment.
   type(hor_index_type) :: HI !< Horizontal index ranges
+  real :: Tr_InvLscale3_out                                     !< An effective inverse length scale cubed (m-3)
+  real :: Tr_InvLscale3_in                                      !< for restoring the tracer concentration in a
+                                                                !! ficticious reservior towards interior values
+                                                                !! when flow is exiting the domain, or towards
+                                                                !! an externally imposed value when flow is entering
 end type OBC_segment_type
 
 !> Open-boundary data
@@ -261,7 +268,7 @@ subroutine open_boundary_config(G, param_file, OBC)
   character(len=15) :: segment_param_str ! The run-time parameter name for each segment
   character(len=100) :: segment_str      ! The contents (rhs) for parameter "segment_param_str"
   character(len=200) :: config1          ! String for OBC_USER_CONFIG
-
+  real               :: Lscale_in, Lscale_out ! parameters controlling tracer values at the boundaries
   allocate(OBC)
 
   call log_version(param_file, mdl, version, "Controls where open boundaries are located, what "//&
@@ -339,8 +346,8 @@ subroutine open_boundary_config(G, param_file, OBC)
       OBC%segment(l)%direction = OBC_NONE
       OBC%segment(l)%is_N_or_S = .false.
       OBC%segment(l)%is_E_or_W = .false.
-      OBC%segment(l)%Tnudge_in = 0.0
-      OBC%segment(l)%Tnudge_out = 0.0
+      OBC%segment(l)%Velocity_nudging_timescale_in = 0.0
+      OBC%segment(l)%Velocity_nudging_timescale_out = 0.0
       OBC%segment(l)%num_fields = 0.0
     enddo
     allocate(OBC%segnum_u(G%IsdB:G%IedB,G%jsd:G%jed)) ; OBC%segnum_u(:,:) = OBC_NONE
@@ -385,9 +392,29 @@ subroutine open_boundary_config(G, param_file, OBC)
                    "Valid values range from 0 to 1. This is only used if \n"//&
                    "one of the open boundary segments is using Orlanski.", &
                    units="nondim",  default=0.2)
+      call get_param(param_file, mdl, "OBC_TRACER_RESERVOIR_LENGTH_SCALE_OUT ", Lscale_out, &
+                 "An effective length scale for restoring the tracer concentration \n"//&
+                 "at the boundaries to externally imposed values when the flow \n"//&
+                 "is exiting the domain.", units="m", default=0.0)
+
+      call get_param(param_file, mdl, "OBC_TRACER_RESERVOIR_LENGTH_SCALE_IN ", Lscale_in, &
+                 "An effective length scale for restoring the tracer concentration \n"//&
+                 "at the boundaries to values from the interior when the flow \n"//&
+                 "is entering the domain.", units="m", default=0.0)
+
     endif
     if (mask_outside) call mask_outside_OBCs(G, param_file, OBC)
   endif
+
+  ! All tracers are using the same restoring length scale for now, but we may want to make this
+  ! tracer-specific in the future for example, in cases where certain tracers are poorly constrained
+  ! by data while others are well constrained - MJH.
+  do l = 1, OBC%number_of_segments
+    OBC%segment(l)%Tr_InvLscale3_in=0.0
+    if (Lscale_in>0.) OBC%segment(l)%Tr_InvLscale3_in =  1.0/(Lscale_in*Lscale_in*Lscale_in)
+    OBC%segment(l)%Tr_InvLscale3_out=0.0
+    if (Lscale_out>0.) OBC%segment(l)%Tr_InvLscale3_out =  1.0/(Lscale_out*Lscale_out*Lscale_out)
+  enddo
 
     ! Safety check
   if ((OBC%open_u_BCs_exist_globally .or. OBC%open_v_BCs_exist_globally) .and. &
@@ -587,8 +614,8 @@ subroutine initialize_segment_data(G, OBC, PF)
 
 end subroutine initialize_segment_data
 
-!< Define indices for segment and store in hor_index_type
-!< using global segment bounds corresponding to q-points
+!> Define indices for segment and store in hor_index_type
+!> using global segment bounds corresponding to q-points
 subroutine setup_segment_indices(G, seg, Is_obc, Ie_obc, Js_obc, Je_obc)
   type(dyn_horgrid_type), intent(in) :: G !< grid type
   type(OBC_segment_type), intent(inout) :: seg  !< Open boundary segment
@@ -598,9 +625,6 @@ subroutine setup_segment_indices(G, seg, Is_obc, Ie_obc, Js_obc, Je_obc)
   integer, intent(in) :: Je_obc !< Q-point global j-index of end of segment
   ! Local variables
   integer :: Isg,Ieg,Jsg,Jeg
-
-!  if (.not. G%Domain%symmetric) call MOM_error(FATAL, "MOM_open_boundary.F90, setup_segment_indices: "//&
-!                       "Need to compile in symmetric mode")
 
   ! Isg, Ieg will be I*_obc in global space
   if (Ie_obc<Is_obc) then
@@ -661,7 +685,7 @@ subroutine setup_u_point_obc(OBC, G, segment_str, l_seg, PF)
   integer :: I_obc, Js_obc, Je_obc ! Position of segment in global index space
   integer :: j, a_loop
   character(len=32) :: action_str(5)
-  character(len=128) :: seg_str, segment_param_str
+  character(len=128) :: segment_param_str
   real, allocatable, dimension(:)  :: tnudge
   ! This returns the global indices for the segment
   call parse_segment_str(G%ieg, G%jeg, segment_str, I_obc, Js_obc, Je_obc, action_str )
@@ -701,17 +725,14 @@ subroutine setup_u_point_obc(OBC, G, segment_str, l_seg, PF)
       OBC%open_u_BCs_exist_globally = .true.
     elseif (trim(action_str(a_loop)) == 'NUDGED') then
       OBC%segment(l_seg)%nudged = .true.
-      write(segment_param_str(1:22),"('OBC_SEGMENT_',i3.3,'_TNUDGE')") l_seg
-      print *,'segment_param_str= ',segment_param_str(1:22)
+      write(segment_param_str(1:43),"('OBC_SEGMENT_',i3.3,'_VELOCITY_NUDGING_TIMESCALES')") l_seg
       allocate(tnudge(2))
-      call get_param(PF, mdl, segment_param_str(1:22), tnudge, &
+      call get_param(PF, mdl, segment_param_str(1:43), tnudge, &
            "Timescales in days for nudging along a segment,\n"//&
            "for inflow, then outflow.", &
                 fail_if_missing=.true.,default=0.,units="days")
-      print *,'tnudge=',tnudge
-!      call parse_segment_param(seg_str, 'TNUDGE_UNITS',OBC%segment(l_seg)%Tnudge_in)
-      OBC%segment(l_seg)%Tnudge_in = 1.0/(tnudge(1)*86400.)
-      OBC%segment(l_seg)%Tnudge_out = 1.0/(tnudge(2)*86400.)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_in = 1.0/(tnudge(1)*86400.)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_out = 1.0/(tnudge(2)*86400.)
       deallocate(tnudge)
       OBC%nudged_u_BCs_exist_globally = .true.
     elseif (trim(action_str(a_loop)) == 'GRADIENT') then
@@ -734,7 +755,7 @@ subroutine setup_u_point_obc(OBC, G, segment_str, l_seg, PF)
 
   enddo ! a_loop
 
-  if (I_obc<=G%HI%IsdB .or. I_obc>=G%HI%IedB) return ! Boundary is not on tile
+  if (I_obc<=G%HI%IsdB+1 .or. I_obc>=G%HI%IedB-1) return ! Boundary is not on tile
   if (Je_obc<=G%HI%JsdB .or. Js_obc>=G%HI%JedB) return ! Segment is not on tile
 
   OBC%segment(l_seg)%on_pe = .true.
@@ -764,6 +785,8 @@ subroutine setup_v_point_obc(OBC, G, segment_str, l_seg, PF)
   integer :: J_obc, Is_obc, Ie_obc ! Position of segment in global index space
   integer :: i, a_loop
   character(len=32) :: action_str(5)
+  character(len=128) :: segment_param_str
+  real, allocatable, dimension(:)  :: tnudge
 
   ! This returns the global indices for the segment
   call parse_segment_str(G%ieg, G%jeg, segment_str, J_obc, Is_obc, Ie_obc, action_str )
@@ -803,8 +826,15 @@ subroutine setup_v_point_obc(OBC, G, segment_str, l_seg, PF)
       OBC%open_v_BCs_exist_globally = .true.
     elseif (trim(action_str(a_loop)) == 'NUDGED') then
       OBC%segment(l_seg)%nudged = .true.
-      OBC%segment(l_seg)%Tnudge_in = 1.0/(3*86400)
-      OBC%segment(l_seg)%Tnudge_out = 1.0/(360*86400)
+      write(segment_param_str(1:43),"('OBC_SEGMENT_',i3.3,'_VELOCITY_NUDGING_TIMESCALES')") l_seg
+      allocate(tnudge(2))
+      call get_param(PF, mdl, segment_param_str(1:43), tnudge, &
+           "Timescales in days for nudging along a segment,\n"//&
+           "for inflow, then outflow.", &
+                fail_if_missing=.true.,default=0.,units="days")
+      OBC%segment(l_seg)%Velocity_nudging_timescale_in = 1.0/(tnudge(1)*86400.)
+      OBC%segment(l_seg)%Velocity_nudging_timescale_out = 1.0/(tnudge(2)*86400.)
+      deallocate(tnudge)
       OBC%nudged_v_BCs_exist_globally = .true.
     elseif (trim(action_str(a_loop)) == 'GRADIENT') then
       OBC%segment(l_seg)%gradient = .true.
@@ -826,7 +856,7 @@ subroutine setup_v_point_obc(OBC, G, segment_str, l_seg, PF)
 
   enddo ! a_loop
 
-  if (J_obc<=G%HI%JsdB .or. J_obc>=G%HI%JedB) return ! Boundary is not on tile
+  if (J_obc<=G%HI%JsdB+1 .or. J_obc>=G%HI%JedB-1) return ! Boundary is not on tile
   if (Ie_obc<=G%HI%IsdB .or. Is_obc>=G%HI%IedB) return ! Segment is not on tile
 
   OBC%segment(l_seg)%on_pe = .true.
@@ -1417,9 +1447,9 @@ subroutine radiation_open_bdry_conds(OBC, u_new, u_old, v_new, v_old, G, dt)
          endif
          if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
            if (dhdt*dhdx < 0.0) then
-             tau = segment%Tnudge_in
+             tau = segment%Velocity_nudging_timescale_in
            else
-             tau = segment%Tnudge_out
+             tau = segment%Velocity_nudging_timescale_out
            endif
            segment%normal_vel(I,j,k) = u_new(I,j,k) + dt*tau*(segment%nudged_normal_vel(I,j,k) - u_new(I,j,k))
          endif
@@ -1471,9 +1501,9 @@ subroutine radiation_open_bdry_conds(OBC, u_new, u_old, v_new, v_old, G, dt)
          endif
          if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
            if (dhdt*dhdx < 0.0) then
-             tau = segment%Tnudge_in
+             tau = segment%Velocity_nudging_timescale_in
            else
-             tau = segment%Tnudge_out
+             tau = segment%Velocity_nudging_timescale_out
            endif
            segment%normal_vel(I,j,k) = u_new(I,j,k) + dt*tau*(segment%nudged_normal_vel(I,j,k) - u_new(I,j,k))
          endif
@@ -1525,9 +1555,9 @@ subroutine radiation_open_bdry_conds(OBC, u_new, u_old, v_new, v_old, G, dt)
          endif
          if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
            if (dhdt*dhdy < 0.0) then
-             tau = segment%Tnudge_in
+             tau = segment%Velocity_nudging_timescale_in
            else
-             tau = segment%Tnudge_out
+             tau = segment%Velocity_nudging_timescale_out
            endif
            segment%normal_vel(i,J,k) = v_new(i,J,k) + dt*tau*(segment%nudged_normal_vel(i,J,k) - v_new(i,J,k))
          endif
@@ -1580,9 +1610,9 @@ subroutine radiation_open_bdry_conds(OBC, u_new, u_old, v_new, v_old, G, dt)
          endif
          if ((segment%radiation .or. segment%oblique) .and. segment%nudged) then
            if (dhdt*dhdy < 0.0) then
-             tau = segment%Tnudge_in
+             tau = segment%Velocity_nudging_timescale_in
            else
-             tau = segment%Tnudge_out
+             tau = segment%Velocity_nudging_timescale_out
            endif
            segment%normal_vel(i,J,k) = v_new(i,J,k) + dt*tau*(segment%nudged_normal_vel(i,J,k) - v_new(i,J,k))
          endif
@@ -2268,7 +2298,15 @@ subroutine update_OBC_segment_data(G, GV, OBC, tv, h, Time)
         if (associated(segment%field(m)%buffer_dst)) then
           do k=1,nz; do j=js_obc2, je_obc;do i=is_obc2,ie_obc
             segment%tr_Reg%Tr(1)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
+! if the tracer reservoir has not yet been initialized, then set to external value.
+! Am using negative values here, which will not work for temperature in degC.
           enddo; enddo; enddo
+          if (.not. segment%tr_Reg%Tr(1)%is_initialized) then
+            do k=1,nz; do j=js_obc2, je_obc;do i=is_obc2,ie_obc
+              segment%tr_Reg%Tr(1)%tres(i,j,k) = segment%tr_Reg%Tr(1)%t(i,j,k)
+            enddo; enddo; enddo
+            segment%tr_Reg%Tr(1)%is_initialized=.true.
+          endif
         else
           segment%tr_Reg%Tr(1)%OBC_inflow_conc = segment%field(m)%value
         endif
@@ -2277,6 +2315,13 @@ subroutine update_OBC_segment_data(G, GV, OBC, tv, h, Time)
           do k=1,nz; do j=js_obc2, je_obc;do i=is_obc2,ie_obc
             segment%tr_Reg%Tr(2)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
           enddo; enddo; enddo
+          if (.not. segment%tr_Reg%Tr(1)%is_initialized) then
+            !if the tracer reservoir has not yet been initialized, then set to external value
+            do k=1,nz; do j=js_obc2, je_obc;do i=is_obc2,ie_obc
+              segment%tr_Reg%Tr(2)%tres(i,j,k) = segment%tr_Reg%Tr(2)%t(i,j,k)
+            enddo; enddo; enddo
+            segment%tr_Reg%Tr(1)%is_initialized=.true.
+          endif
         else
           segment%tr_Reg%Tr(2)%OBC_inflow_conc = segment%field(m)%value
         endif
@@ -2402,21 +2447,22 @@ subroutine segment_tracer_registry_init(param_file, segment)
 
 end subroutine segment_tracer_registry_init
 
-subroutine register_segment_tracer(tr_desc, param_file, GV, segment, tr_desc_ptr, &
+subroutine register_segment_tracer(tr_ptr, param_file, GV, segment, &
                                    OBC_scalar, OBC_array)
-  type(verticalGrid_type),        intent(in)    :: GV           !< ocean vertical grid structure
-  type(vardesc),         intent(in)             :: tr_desc      !< metadata about the tracer
-  type(param_file_type), intent(in)             :: param_file   !< file to parse for  model parameter values
-  type(OBC_segment_type), intent(inout)         :: segment      !< current segment data structure
-  type(vardesc), target, optional               :: tr_desc_ptr  !< A target that can be used to set a pointer to the
-                                                                !! stored value of tr%tr_desc. This target must be
-                                                                !! an enduring part of the control structure,
-                                                                !! because the tracer registry will use this memory,
-                                                                !! but it also means that any updates to this
-                                                                !! structure in the calling module will be
-                                                                !! available subsequently to the tracer registry.
-  real, optional                                :: OBC_scalar   !< If present, use scalar value for segment tracer inflow concentration.
-  logical, optional                             :: OBC_array    !< If true, use array values for segment tracer inflow concentration.
+  type(verticalGrid_type), intent(in)   :: GV         !< ocean vertical grid structure
+  type(tracer_type), target             :: tr_ptr     !< A target that can be used to set a pointer to the
+                                                      !! stored value of tr. This target must be
+                                                      !! an enduring part of the control structure,
+                                                      !! because the tracer registry will use this memory,
+                                                      !! but it also means that any updates to this
+                                                      !! structure in the calling module will be
+                                                      !! available subsequently to the tracer registry.
+  type(param_file_type), intent(in)     :: param_file !< file to parse for  model parameter values
+  type(OBC_segment_type), intent(inout) :: segment    !< current segment data structure
+  real, optional                        :: OBC_scalar !< If present, use scalar value for segment tracer
+                                                      !! inflow concentration.
+  logical, optional                     :: OBC_array  !< If true, use array values for segment tracer
+                                                      !! inflow concentration.
 
 
 ! Local variables
@@ -2425,7 +2471,6 @@ subroutine register_segment_tracer(tr_desc, param_file, GV, segment, tr_desc_ptr
   integer :: IsdB, IedB, JsdB, JedB
   character(len=256) :: mesg    ! Message for error messages.
 
-!  if (.not. associated(segment%tr_Reg)) call segment_tracer_registry_init(param_file, segment)
   call segment_tracer_registry_init(param_file, segment)
 
   if (segment%tr_Reg%ntseg>=MAX_FIELDS_) then
@@ -2441,13 +2486,8 @@ subroutine register_segment_tracer(tr_desc, param_file, GV, segment, tr_desc_ptr
   IsdB = segment%HI%IsdB ; IedB = segment%HI%IedB
   JsdB = segment%HI%JsdB ; JedB = segment%HI%JedB
 
-  if (present(tr_desc_ptr)) then
-    segment%tr_Reg%Tr(ntseg)%vd => tr_desc_ptr
-  else
-    allocate(segment%tr_Reg%Tr(ntseg)%vd) ; segment%tr_Reg%Tr(ntseg)%vd = tr_desc
-  endif
-
-  call query_vardesc(segment%tr_Reg%Tr(ntseg)%vd, name=segment%tr_Reg%Tr(ntseg)%name)
+  segment%tr_Reg%Tr(ntseg)%Tr => tr_ptr
+  segment%tr_Reg%Tr(ntseg)%name = tr_ptr%name
 
   if (segment%tr_Reg%locked) call MOM_error(FATAL, &
       "MOM register_tracer was called for variable "//trim(segment%tr_Reg%Tr(ntseg)%name)//&
@@ -2456,9 +2496,13 @@ subroutine register_segment_tracer(tr_desc, param_file, GV, segment, tr_desc_ptr
   if (present(OBC_scalar)) segment%tr_Reg%Tr(ntseg)%OBC_inflow_conc = OBC_scalar ! initialize tracer value later
   if (present(OBC_array)) then
     if (segment%is_E_or_W) then
-      allocate(segment%tr_Reg%Tr(ntseg)%t(IsdB:IedB,jsd:jed,1:GV%ke))
+      allocate(segment%tr_Reg%Tr(ntseg)%t(IsdB:IedB,jsd:jed,1:GV%ke));segment%tr_Reg%Tr(ntseg)%t(:,:,:)=0.0
+      allocate(segment%tr_Reg%Tr(ntseg)%tres(IsdB:IedB,jsd:jed,1:GV%ke));segment%tr_Reg%Tr(ntseg)%tres(:,:,:)=0.0
+      segment%tr_Reg%Tr(ntseg)%is_initialized=.false.
     elseif (segment%is_N_or_S) then
-      allocate(segment%tr_Reg%Tr(ntseg)%t(isd:ied,JsdB:JedB,1:GV%ke))
+      allocate(segment%tr_Reg%Tr(ntseg)%t(isd:ied,JsdB:JedB,1:GV%ke));segment%tr_Reg%Tr(ntseg)%t(:,:,:)=0.0
+      allocate(segment%tr_Reg%Tr(ntseg)%tres(isd:ied,JsdB:JedB,1:GV%ke));segment%tr_Reg%Tr(ntseg)%tres(:,:,:)=0.0
+      segment%tr_Reg%Tr(ntseg)%is_initialized=.false.
     endif
   endif
 
@@ -2479,18 +2523,18 @@ subroutine segment_tracer_registry_end(Reg)
   endif
 end subroutine segment_tracer_registry_end
 
-subroutine register_temp_salt_segments(GV, OBC, tv, vd_T, vd_S, param_file)
+subroutine register_temp_salt_segments(GV, OBC, tr_Reg, param_file)
   type(verticalGrid_type),    intent(in)    :: GV         !< ocean vertical grid structure
   type(ocean_OBC_type),       pointer       :: OBC        !< Open boundary structure
-  type(thermo_var_ptrs),      intent(in)    :: tv         !< Thermodynamics structure
-  type(vardesc),              intent(in)    :: vd_T       !< Temperature descriptor
-  type(vardesc),              intent(in)    :: vd_S       !< Salinity descriptor
+  type(tracer_registry_type), pointer       :: tr_Reg     !< Tracer registry
   type(param_file_type),      intent(in)    :: param_file !< file to parse for  model parameter values
 
 ! Local variables
   integer :: isd, ied, IsdB, IedB, jsd, jed, JsdB, JedB, nz, nf
   integer :: i, j, k, n
+  character(len=32)  :: name
   type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  type(tracer_type), pointer      :: tr_ptr
 
   if (.not. associated(OBC)) return
 
@@ -2501,9 +2545,13 @@ subroutine register_temp_salt_segments(GV, OBC, tv, vd_T, vd_S, param_file)
     if (associated(segment%tr_Reg)) &
          call MOM_error(FATAL,"register_temp_salt_segments: tracer array was previously allocated")
 
-    call register_segment_tracer(vd_T, param_file, GV, segment, &
+    name = 'temp'
+    call tracer_name_lookup(tr_Reg, tr_ptr, name)
+    call register_segment_tracer(tr_ptr, param_file, GV, segment, &
                                  OBC_array=segment%temp_segment_data_exists)
-    call register_segment_tracer(vd_S, param_file, GV, segment, &
+    name = 'salt'
+    call tracer_name_lookup(tr_Reg, tr_ptr, name)
+    call register_segment_tracer(tr_ptr, param_file, GV, segment, &
                                  OBC_array=segment%salt_segment_data_exists)
   enddo
 
@@ -2561,6 +2609,8 @@ subroutine fill_temp_salt_segments(G, OBC, tv)
         endif
       enddo ; enddo
     endif
+    segment%tr_Reg%Tr(1)%tres(:,:,:) = segment%tr_Reg%Tr(1)%t(:,:,:)
+    segment%tr_Reg%Tr(2)%tres(:,:,:) = segment%tr_Reg%Tr(2)%t(:,:,:)
   enddo
 end subroutine fill_temp_salt_segments
 
