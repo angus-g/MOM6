@@ -1600,8 +1600,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! we only need to do this in our own domain because this
     ! is a global sum
     z_new(:,:,:) = 0. ;  h_int(:,:,:) = 0.
-    do j = G%jsc-1,G%jec+1
-      do i = G%isc-1,G%iec+1
+    do j = G%jsc,G%jec
+      do i = G%isc,G%iec
         h_int(i,j,2:nz) = (h(i,j,2:nz) * h(i,j,1:nz-1)) / &
              (h(i,j,2:nz) + h(i,j,1:nz-1) + GV%H_subroundoff)
         ! we don't really want to volume-weight this, we just want to discount vanished layers
@@ -1612,8 +1612,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         z_new(i,j,2:nz) = z_int(i,j,2:nz) * h_int(i,j,2:nz)
       enddo
     enddo
-    global_z_sum = reproducing_sum(z_new, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=z_mean)
-    global_h_sum = reproducing_sum(h_int, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=h_col)
+    global_z_sum = reproducing_sum(z_new, G%isc, G%iec, G%jsc, G%jec, sums=z_mean)
+    global_h_sum = reproducing_sum(h_int, G%isc, G%iec, G%jsc, G%jec, sums=h_col)
     z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
 
     do K = 2,nz-1
