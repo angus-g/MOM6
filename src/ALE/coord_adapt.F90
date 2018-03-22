@@ -53,6 +53,7 @@ type, public :: adapt_CS
   logical :: mean_h = .false.
   logical :: twin_grad = .true.
   logical :: physicalSlope
+  logical :: restoreMean
 
   type(zlike_CS), pointer :: zlike_CS => null()
 end type adapt_CS
@@ -90,11 +91,11 @@ subroutine end_coord_adapt(CS)
   deallocate(CS)
 end subroutine end_coord_adapt
 
-subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope, restoringTimescale)
+subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope, restoringTimescale, restoreMean)
   type(adapt_CS),    pointer    :: CS
   real, optional,    intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, &
        adaptCutoff, adaptSmooth, restoringTimescale
-  logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope
+  logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope, restoreMean
 
   if (.not. associated(CS)) call MOM_error(FATAL, "set_adapt_params: CS not associated")
 
@@ -110,6 +111,7 @@ subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adap
   if (present(adaptCutoff)) CS%adaptCutoff = adaptCutoff
   if (present(adaptSmooth)) CS%adaptSmooth = adaptSmooth
   if (present(adaptPhysicalSlope)) CS%physicalSlope = adaptPhysicalSlope
+  if (present(restoreMean)) CS%restoreMean = restoreMean
 end subroutine set_adapt_params
 
 subroutine build_adapt_column(CS, G, GV, tv, i, j)

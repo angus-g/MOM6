@@ -568,6 +568,12 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
          "Use a physical slope calculation for weighting of terms.", &
          default=.true.)
     call set_regrid_params(CS, adaptPhysicalSlope=tmpLogical)
+
+    call get_param(param_file, mod, "ADAPT_RESTORE_MEAN", tmpLogical, &
+         "If True, restore toward a dynamically-calculated mean interface position.\n"//&
+         "Otherwise, restore toward the profile given by ALE_COORDINATE_CONFIG.", &
+         default=.false.)
+    call set_regrid_params(CS, adaptRestoreMean=tmpLogical)
   endif
 
   if (main_parameters .and. coord_is_state_dependent) then
@@ -1588,32 +1594,39 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     z_int(:,:,K) = z_int(:,:,K+1) + h(:,:,k)
   enddo
 
-  ! calculate geometric mean of thicknesses on interfaces
-  ! we only need to do this in our own domain because this
-  ! is a global sum
-  z_new(:,:,:) = 0. ;  h_int(:,:,:) = 0.
-  do j = G%jsc-1,G%jec+1
-    do i = G%isc-1,G%iec+1
-      h_int(i,j,2:nz) = (h(i,j,2:nz) * h(i,j,1:nz-1)) / &
-           (h(i,j,2:nz) + h(i,j,1:nz-1) + GV%H_subroundoff)
-      ! we don't really want to volume-weight this, we just want to discount vanished layers
-      ! this way, we won't bias towards thick layers
-      h_int(i,j,2:nz) = max(GV%H_to_m * h_int(i,j,2:nz), 1.0)
-      h_int(i,j,2:nz) = h_int(i,j,2:nz) * (G%areaT(i,j) * G%mask2dT(i,j))
-      ! weight height by thickness
-      z_new(i,j,2:nz) = z_int(i,j,2:nz) * h_int(i,j,2:nz)
+  if (CS%adapt_CS%restoreMean) then
+    ! calculate geometric mean of thicknesses on interfaces
+    ! we only need to do this in our own domain because this
+    ! is a global sum
+    z_new(:,:,:) = 0. ;  h_int(:,:,:) = 0.
+    do j = G%jsc-1,G%jec+1
+      do i = G%isc-1,G%iec+1
+        h_int(i,j,2:nz) = (h(i,j,2:nz) * h(i,j,1:nz-1)) / &
+             (h(i,j,2:nz) + h(i,j,1:nz-1) + GV%H_subroundoff)
+        ! we don't really want to volume-weight this, we just want to discount vanished layers
+        ! this way, we won't bias towards thick layers
+        h_int(i,j,2:nz) = max(GV%H_to_m * h_int(i,j,2:nz), 1.0)
+        h_int(i,j,2:nz) = h_int(i,j,2:nz) * (G%areaT(i,j) * G%mask2dT(i,j))
+        ! weight height by thickness
+        z_new(i,j,2:nz) = z_int(i,j,2:nz) * h_int(i,j,2:nz)
+      enddo
     enddo
-  enddo
-  global_z_sum = reproducing_sum(z_new, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=z_mean)
-  global_h_sum = reproducing_sum(h_int, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=h_col)
-  z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
+    global_z_sum = reproducing_sum(z_new, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=z_mean)
+    global_h_sum = reproducing_sum(h_int, G%isc-1, G%iec+1, G%jsc-1, G%jec+1, sums=h_col)
+    z_mean(2:nz) = z_mean(2:nz) / h_col(2:nz)
 
-  do K = 2,nz-1
-     if (z_mean(K) < z_mean(K+1)) then
+    do K = 2,nz-1
+      if (z_mean(K) < z_mean(K+1)) then
         print *, z_mean
         call MOM_error(FATAL, 'tangled z_mean')
-     endif
-  enddo
+      endif
+    enddo
+  else
+    z_mean(1) = 0.
+    do K = 2,nz
+      z_mean(K) = z_mean(K-1) - CS%adapt_CS%coordinateResolution(k-1)
+    end do
+  end if
 
   ! the top and bottom interfaces don't move
   dz_a(:,:,1) = 0. ; dz_a(:,:,nz+1) = 0.
@@ -2736,7 +2749,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              halocline_strat_tol, integrate_downward_for_e, &
              adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, &
              adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope, &
-             adaptRestoringTimescale)
+             adaptRestoringTimescale, adaptRestoreMean)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2754,7 +2767,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
   real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth, adaptRestoringTimescale
-  logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope
+  logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope, adaptRestoreMean
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
   if (present(boundary_extrapolation)) call set_interp_extrap(CS%interp_CS, boundary_extrapolation)
@@ -2805,7 +2818,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope, restoringTimescale=adaptRestoringTimescale)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope, restoringTimescale=adaptRestoringTimescale, restoreMean=adaptRestoreMean)
   end select
 
 end subroutine set_regrid_params
