@@ -1570,6 +1570,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real :: hdi_sig_u, hdj_sig_u, hdi_sig_v, hdj_sig_v, dk_sig_u, dk_sig_v
   real :: ts_ratio, slope, phys_slope
   real :: global_z_sum, global_h_sum
+  real :: dz_p_unlim
 
   ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag, valid
@@ -1644,6 +1645,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     if (associated(diag_CS%slope_v)) diag_CS%slope_v(:,:,:) = 0.
     if (associated(diag_CS%coord_u)) diag_CS%coord_u(:,:,:) = 0.
     if (associated(diag_CS%coord_v)) diag_CS%coord_v(:,:,:) = 0.
+    if (associated(diag_CS%limiting)) diag_CS%limiting(:,:,:) = 0.
   endif
 
   do K = 2,nz
@@ -1807,6 +1809,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         ! we also calculate the difference in pressure (interface position)
         dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * ts_ratio
+        dz_p_unlim = dz_p_i(I,j)
         ! dz_p_i positive => left is further down than right
         ! => move left up, right down
 
@@ -1820,6 +1823,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           dz_p_i(I,j) = min(dz_p_i(I,j), 0.125 * min( &
                h(i,j,k-1) * G%areaT(i,j), &
                h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j))
+        end if
+
+        ! diagnose the difference in flux due to limiting as applied to the interface
+        if (do_diag .and. associated(diag_CS%limiting)) then
+          diag_CS%limiting(i,j,K) = diag_CS%limiting(i,j,K) + abs(dz_p_i(I,j) - dz_p_unlim)
+          diag_CS%limiting(i+1,j,K) = diag_CS%limiting(i+1,j,K) + abs(dz_p_i(I,j) - dz_p_unlim)
         end if
 
         ! calculate and diagnose along-coordinate slope
@@ -1933,6 +1942,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio
+        dz_p_unlim = dz_p_j(i,J)
 
         if (dz_p_j(i,J) < 0.) then
           dz_p_j(i,J) = max(dz_p_j(i,J), -0.125 * min( &
@@ -1942,6 +1952,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           dz_p_j(i,J) = min(dz_p_j(i,J), 0.125 * min( &
                h(i,j,k-1) * G%areaT(i,j), &
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
+        end if
+
+        if (do_diag .and. associated(diag_CS%limiting)) then
+          diag_CS%limiting(i,j,K) = diag_CS%limiting(i,j,K) + abs(dz_p_j(i,J) - dz_p_unlim)
+          diag_CS%limiting(i,j+1,K) = diag_CS%limiting(i,j+1,K) + abs(dz_p_j(i,J) - dz_p_unlim)
         end if
 
         ! diagnose along-coordinate slope
