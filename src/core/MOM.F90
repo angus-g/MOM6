@@ -154,6 +154,7 @@ type MOM_diag_IDs
   integer :: id_adapt_denom_v = -1
   integer :: id_adapt_coord_u = -1
   integer :: id_adapt_coord_v = -1
+  integer :: id_adapt_lim = -1
 end type MOM_diag_IDs
 
 !> Control structure for the MOM module, including the variables that describe
@@ -1074,6 +1075,7 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
 
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1), target :: phys_u, slope_u, denom_u, coord_u
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), target :: phys_v, slope_v, denom_v, coord_v
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), target :: limiting
 
   integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
   logical :: use_ice_shelf ! Needed for selecting the right ALE interface.
@@ -1146,6 +1148,7 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
       if (CS%IDs%id_adapt_denom_v > 0) diag_CS%denom_v => denom_v
       if (CS%IDs%id_adapt_coord_u > 0) diag_CS%coord_u => coord_u
       if (CS%IDs%id_adapt_coord_v > 0) diag_CS%coord_v => coord_v
+      if (CS%IDs%id_adapt_lim > 0) diag_CS%limiting => limiting
 
       call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
 
@@ -1172,6 +1175,7 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
       if (CS%IDs%id_adapt_denom_v > 0) call post_data(CS%IDs%id_adapt_denom_v, denom_v, CS%diag)
       if (CS%IDs%id_adapt_coord_u > 0) call post_data(CS%IDs%id_adapt_coord_u, coord_u, CS%diag)
       if (CS%IDs%id_adapt_coord_v > 0) call post_data(CS%IDs%id_adapt_coord_v, coord_v, CS%diag)
+      if (CS%IDs%id_adapt_lim > 0) call post_data(CS%IDs%id_adapt_lim, limiting, CS%diag)
 
       if (showCallTree) call callTree_waypoint("finished ALE_main (step_MOM_thermo)")
       call cpu_clock_end(id_clock_ALE)
@@ -2462,6 +2466,8 @@ subroutine register_diags(Time, G, GV, IDs, diag)
        'Adaptive coordinate along-coordinate slope on u-points')
   IDs%id_adapt_coord_v = register_diag_field('ocean_model', 'adapt_coord_v', diag%axesCvi, Time, &
        'Adaptive coordinate along-coordinate slope on v-points')
+  IDs%id_adapt_lim = register_diag_field('ocean_model', 'adapt_limiting', diag%axesTi, Time, &
+       'Adaptive coordinate layer-limiting on smoothing term')
 end subroutine register_diags
 
 !> This subroutine sets up clock IDs for timing various subroutines.
