@@ -1703,9 +1703,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                + beta * (s_int(i+1,j) - s_int(i,j))
         end if
 
+        dk_sig_u = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i+1,j))
+
         ! calculate hdi_sig by upstreamed h
-        if (di_sig < 0.) then
-          ! left is denser than right, left moves up, right moves down
+        if (di_sig * dk_sig_u < 0.) then
+          ! left is denser than right, left moves up, right moves down (toward denser)
           h_interp = 0.5 * (h(i,j,k-1) + h(i+1,j,k))
         else
           h_interp = 0.5 * (h(i,j,k) + h(i+1,j,k-1))
@@ -1721,7 +1723,6 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         hdi_sig(I,j,K) = h_interp * di_sig * G%IdxCu(I,j)
         ! calculate physical slope
         ! XXX take the square root of the average of the squares here???
-        dk_sig_u = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i+1,j))
         hdi_sig_phys(I,j,K) = hdi_sig(I,j,K) - &
              G%IdxCu(I,j) * dk_sig_u * (z_int(i+1,j,K) - z_int(i,j,K))
       enddo
@@ -1749,7 +1750,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                + beta * (s_int(i,j+1) - s_int(i,j))
         end if
 
-        if (dj_sig < 0.) then
+        dk_sig_v = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i,j+1))
+
+        if (dj_sig * dk_sig_v < 0.) then
           h_interp = 0.5 * (h(i,j,k-1) + h(i,j+1,k))
         else
           h_interp = 0.5 * (h(i,j,k) + h(i,j+1,k-1))
@@ -1760,7 +1763,6 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         h_on_j(i,J,K) = h_interp
         hdj_sig(i,J,K) = h_interp * dj_sig * G%IdyCv(i,J)
-        dk_sig_v = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i,j+1))
         hdj_sig_phys(i,J,K) = hdj_sig(i,J,K) - &
              G%IdyCv(i,J) * dk_sig_v * (z_int(i,j+1,K) - z_int(i,j,K))
       enddo
@@ -1785,7 +1787,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           ! if gradients in all directions are exactly zero, we don't want any flux
           dz_i(I,j) = 0.
         else
-          dz_i(I,j) = hdi_sig(I,j,K) / sqrt(i_denom)
+          dz_i(I,j) = hdi_sig(I,j,K) / sign(sqrt(i_denom), dk_sig_u)
         end if
 
         if (do_diag .and. associated(diag_CS%slope_u)) diag_CS%slope_u(I,j,K) = dz_i(I,j)
@@ -1920,7 +1922,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         if (j_denom == 0.) then
           dz_j(i,J) = 0.
         else
-          dz_j(i,J) = hdj_sig(i,J,K) / sqrt(j_denom)
+          dz_j(i,J) = hdj_sig(i,J,K) / sign(sqrt(j_denom), dk_sig_v)
         end if
 
         if (do_diag .and. associated(diag_CS%slope_v)) diag_CS%slope_v(i,J,K) = dz_j(i,J)
