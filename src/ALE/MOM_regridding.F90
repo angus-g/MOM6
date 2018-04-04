@@ -1646,6 +1646,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     if (associated(diag_CS%coord_u)) diag_CS%coord_u(:,:,:) = 0.
     if (associated(diag_CS%coord_v)) diag_CS%coord_v(:,:,:) = 0.
     if (associated(diag_CS%limiting)) diag_CS%limiting(:,:,:) = 0.
+    if (associated(diag_CS%dk_sig)) diag_CS%dk_sig(:,:,:) = 0.
   endif
 
   do K = 2,nz
@@ -1671,7 +1672,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       do i = G%isc-2,G%iec+2
         dk_sig_int(i,j) = alpha_int(i,j) * (tv%t(i,j,k) - tv%t(i,j,k-1)) + &
              beta_int(i,j) * (tv%s(i,j,k) - tv%s(i,j,k-1))
-      enddo
+
+        if (do_diag .and. associated(diag_CS%dk_sig)) diag_CS%dk_sig(i,j,K) = dk_sig_int(i,j)
+     enddo
     enddo
 
     ! calculate horizontal derivatives on i-points
