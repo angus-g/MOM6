@@ -26,7 +26,8 @@ type, public :: adapt_diag_CS
   real, dimension(:,:,:), pointer :: coord_u => null()
   real, dimension(:,:,:), pointer :: coord_v => null()
 
-  real, dimension(:,:,:), pointer :: limiting => null()
+  real, dimension(:,:,:), pointer :: limiting_smooth => null()
+  real, dimension(:,:,:), pointer :: limiting_dense => null()
 
   real, dimension(:,:,:), pointer :: dk_sig => null()
 end type adapt_diag_CS
