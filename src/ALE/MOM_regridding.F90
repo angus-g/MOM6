@@ -1646,7 +1646,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     if (associated(diag_CS%slope_v)) diag_CS%slope_v(:,:,:) = 0.
     if (associated(diag_CS%coord_u)) diag_CS%coord_u(:,:,:) = 0.
     if (associated(diag_CS%coord_v)) diag_CS%coord_v(:,:,:) = 0.
-    if (associated(diag_CS%limiting)) diag_CS%limiting(:,:,:) = 0.
+    if (associated(diag_CS%limiting_smooth)) diag_CS%limiting_smooth(:,:,:) = 0.
+    if (associated(diag_CS%limiting_dense)) diag_CS%limiting_dense(:,:,:) = 0.
     if (associated(diag_CS%dk_sig)) diag_CS%dk_sig(:,:,:) = 0.
   endif
 
@@ -1799,6 +1800,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         if (do_diag .and. associated(diag_CS%denom_u)) &
              diag_CS%denom_u(I,j,K) = sqrt(i_denom) / (h_on_i(I,j,K) + GV%H_subroundoff)
 
+        dz_p_unlim = dz_i(I,j)
+
         ! limit slope based on adjacent layers
         ! dz_i has opposite sign to hdi_sig
         if (dz_i(I,j) < 0.) then
@@ -1811,6 +1814,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           dz_i(I,j) = min(dz_i(I,j), 0.125 * min( &
                h(i,j,k-1) * G%areaT(i,j), &
                h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j))
+        end if
+
+        if (do_diag .and. associated(diag_CS%limiting_dense)) then
+          diag_CS%limiting_dense(i,j,K) = diag_CS%limiting_dense(i,j,K) + (dz_i(I,j) - dz_p_unlim)
+          diag_CS%limiting_dense(i+1,j,K) = diag_CS%limiting_dense(i+1,j,K) + (dz_i(I,j) - dz_p_unlim)
         end if
 
         ! we also calculate the difference in pressure (interface position)
@@ -1832,9 +1840,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         end if
 
         ! diagnose the difference in flux due to limiting as applied to the interface
-        if (do_diag .and. associated(diag_CS%limiting)) then
-          diag_CS%limiting(i,j,K) = diag_CS%limiting(i,j,K) + abs(dz_p_i(I,j) - dz_p_unlim)
-          diag_CS%limiting(i+1,j,K) = diag_CS%limiting(i+1,j,K) + abs(dz_p_i(I,j) - dz_p_unlim)
+        if (do_diag .and. associated(diag_CS%limiting_smooth)) then
+          diag_CS%limiting_smooth(i,j,K) = diag_CS%limiting_smooth(i,j,K) + (dz_p_i(I,j) - dz_p_unlim)
+          diag_CS%limiting_smooth(i+1,j,K) = diag_CS%limiting_smooth(i+1,j,K) + (dz_p_i(I,j) - dz_p_unlim)
         end if
 
         ! calculate and diagnose along-coordinate slope
@@ -1866,7 +1874,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         ! calculate weighting between density and pressure terms
         ! by a cutoff value on the local normalised stratification
-        if (slope < CS%adapt_CS%adaptCutoff**2) then
+        if (slope <= CS%adapt_CS%adaptCutoff**2) then
           weight = 1.0 - CS%adapt_CS%adaptSmooth; weight2 = 0.
         else
           weight = 0.0 ; weight2 = 1.0 - CS%adapt_CS%adaptSmooth
@@ -1933,6 +1941,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         if (do_diag .and. associated(diag_CS%denom_v)) &
              diag_CS%denom_v(i,J,K) = sqrt(j_denom) / (h_on_j(i,J,K) + GV%H_subroundoff)
 
+        dz_p_unlim = dz_j(i,J)
+
         ! density limiter
         ! dz_j [m2]
         if (dz_j(i,J) < 0.) then
@@ -1945,6 +1955,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           dz_j(i,J) = min(dz_j(i,J), 0.125 * min( &
                h(i,j,k-1) * G%areaT(i,j), &
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
+        end if
+
+        if (do_diag .and. associated(diag_CS%limiting_dense)) then
+          diag_CS%limiting_dense(i,j,K) = diag_CS%limiting_dense(i,j,K) + (dz_j(i,J) - dz_p_unlim)
+          diag_CS%limiting_dense(i,j+1,K) = diag_CS%limiting_dense(i,j+1,K) + (dz_j(i,J) - dz_p_unlim)
         end if
 
         dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio
@@ -1960,9 +1975,9 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
                h(i,j+1,k) * G%areaT(i,j+1)) * G%IdxCv(i,J))
         end if
 
-        if (do_diag .and. associated(diag_CS%limiting)) then
-          diag_CS%limiting(i,j,K) = diag_CS%limiting(i,j,K) + abs(dz_p_j(i,J) - dz_p_unlim)
-          diag_CS%limiting(i,j+1,K) = diag_CS%limiting(i,j+1,K) + abs(dz_p_j(i,J) - dz_p_unlim)
+        if (do_diag .and. associated(diag_CS%limiting_smooth)) then
+          diag_CS%limiting_smooth(i,j,K) = diag_CS%limiting_smooth(i,j,K) + (dz_p_j(i,J) - dz_p_unlim)
+          diag_CS%limiting_smooth(i,j+1,K) = diag_CS%limiting_smooth(i,j+1,K) + (dz_p_j(i,J) - dz_p_unlim)
         end if
 
         ! diagnose along-coordinate slope
@@ -1989,7 +2004,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         if (CS%adapt_CS%physicalSlope) slope = phys_slope
 
-        if (slope < CS%adapt_CS%adaptCutoff**2) then
+        if (slope <= CS%adapt_CS%adaptCutoff**2) then
           weight = 1.0 - CS%adapt_CS%adaptSmooth ; weight2 = 0.
         else
           weight = 0.0 ; weight2 = 1.0 - CS%adapt_CS%adaptSmooth
