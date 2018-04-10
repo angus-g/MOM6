@@ -1555,6 +1555,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
   ! interface position after adaptivity, mean interface position across basin
   real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd
+  real, dimension(SZK_(GV)-1) :: k_grid
 
   ! numerator of density term and upstreamed h
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i, hdi_sig_phys
@@ -2119,26 +2120,26 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_r(i,j,K) = ts_ratio * (max(min(z_mean(K), z_upd(1)), z_upd(nz+1)) - z_upd(K)) &
              / (1.0 + ts_ratio)
 
-        ! using filtered_grid_motion to obtain our dzInterface leads to a loss of precision:
-        ! we effectively add the depth of the ocean and immediately subtract it out, losing
-        ! about 4-5 orders of magnitude!
-        ! instead, we just apply the calculated value directly
-        ! combine both the layer-limited and barotropically-limited fluxes
         dzInterface(i,j,K) = dz_a(i,j,K) + dz_p(i,j,K)
 
         if (CS%adapt_CS%restoringTimescale > 0) &
              dzInterface(i,j,K) = dzInterface(i,j,K) + dz_r(i,j,K)
-     enddo
-    enddo
-  enddo
 
-  ! add restoring term if we haven't disabled it by a negative timescale
-  ! if (CS%adapt_CS%restoringTimescale > 0) then
-  !   do K = 2,nz
-  !     !call adjust_area_mean_to_zero(dz_r(:,:,K), G)
-  !     dzInterface(:,:,K) = dzInterface(:,:,K) + dz_r(:,:,K)
-  !   enddo
-  ! endif
+     enddo
+
+     ! update thicknesses and diffuse within the column
+     do k = 1,nz
+        h_col(k) = h(i,j,k) + (dzInterface(i,j,K) - dzInterface(i,j,K+1))
+     enddo
+     ! use h_col(1:nz) because it's declared as nz+1 to use for summing
+     call build_adapt_column(CS%adapt_CS, G, GV, h_col(1:nz), k_grid, i, j)
+
+     ! reconstruct dzInterface after diffusing
+     do K = 2,nz
+        dzInterface(i,j,K) = dzInterface(i,j,K-1) + (h(i,j,k-1) - h_col(k-1))
+     enddo
+  enddo
+enddo
 
   do j = G%jsc-1,G%jec+1
      do i = G%isc-1,G%iec+1
