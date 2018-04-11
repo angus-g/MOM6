@@ -131,7 +131,7 @@ subroutine build_adapt_column(CS, G, GV, h, k_in, i, j)
 
   ! local variables for tridiagonal solver
   real :: b1, b_denom_1, d1
-  real, dimension(SZK_(GV)-1) :: c1
+  real, dimension(SZK_(GV)) :: c1
   real, dimension(0:SZK_(GV)) :: k_grid
 
   nz = CS%nk
@@ -142,6 +142,7 @@ subroutine build_adapt_column(CS, G, GV, h, k_in, i, j)
   ! initial values for no-flux boundary condition
   b1 = 1.0 / (1. + k_grid(1))
   d1 = b1
+  c1(1) = k_grid(1) * b1
   h(1) = b1 * h(1) ! perform first elimination to avoid out-of-bounds access
 
   do k = 2,nz
