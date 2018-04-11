@@ -139,26 +139,27 @@ subroutine build_adapt_column(CS, G, GV, h, k_in, i, j)
   k_grid(0) = 0.
   k_grid(nz) = 0.
 
-  ! XXX this is written for a specified boundary condition (not no-flux)
-  b1 = 1.0
-  ! Q_1 = 1 - q_1 = 1 - 0/1
-  d1 = 1.0
-  do k = 1,nz
-     ! numerator of Q_k
-     b_denom_1 = 1. + d1 * k_grid(K-1)
-     ! update denominator for k
-     b1 = 1.0 / (b_denom_1 + k_grid(K))
+  ! initial values for no-flux boundary condition
+  b1 = 1.0 / (1. + k_grid(1))
+  d1 = b1
+  h(1) = b1 * h(1) ! perform first elimination to avoid out-of-bounds access
 
-     c1(k) = k_grid(K) * b1
-     d1 = b_denom_1 * b1
+  do k = 2,nz
+    ! numerator of Q_k
+    b_denom_1 = 1. + d1 * k_grid(K-1)
+    ! update denominator for k
+    b1 = 1.0 / (b_denom_1 + k_grid(K))
 
-     ! forward elimination
-     h(k) = b1 * (h(k) + k_grid(K-1) * h(k-1))
+    c1(k) = k_grid(K) * b1
+    d1 = b_denom_1 * b1
+
+    ! forward elimination
+    h(k) = b1 * (h(k) + k_grid(K-1) * h(k-1))
   end do
 
   ! backward substitution
   do k = nz,1,-1
-     h(k) = h(k) + c1(k) * h(k+1)
+    h(k) = h(k) + c1(k) * h(k+1)
   end do
 end subroutine build_adapt_column
 
