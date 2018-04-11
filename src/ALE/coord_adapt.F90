@@ -119,12 +119,12 @@ subroutine set_adapt_params(CS, adaptAlphaRho, adaptAlphaP, adaptTimescale, adap
   if (present(restoreMean)) CS%restoreMean = restoreMean
 end subroutine set_adapt_params
 
-subroutine build_adapt_column(CS, G, GV, h, k_grid, i, j)
+subroutine build_adapt_column(CS, G, GV, h, k_in, i, j)
   type(adapt_CS),                              intent(in)    :: CS
   type(ocean_grid_type),                       intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
   real, dimension(SZK_(GV)), intent(inout) :: h !< Thicknesses to diffuse vertically
-  real, dimension(SZK_(GV)-1), intent(in) :: k_grid !< Diffusivity coefficients
+  real, dimension(SZK_(GV)-1), intent(in) :: k_in !< Diffusivity coefficients
   integer,                                     intent(in)    :: i, j
 
   integer :: k, nz
@@ -132,29 +132,33 @@ subroutine build_adapt_column(CS, G, GV, h, k_grid, i, j)
   ! local variables for tridiagonal solver
   real :: b1, b_denom_1, d1
   real, dimension(SZK_(GV)-1) :: c1
+  real, dimension(0:SZK_(GV)) :: k_grid
 
   nz = CS%nk
+  k_grid(1:nz-1) = k_in(:)
+  k_grid(0) = 0.
+  k_grid(nz) = 0.
 
+  ! XXX this is written for a specified boundary condition (not no-flux)
   b1 = 1.0
   ! Q_1 = 1 - q_1 = 1 - 0/1
   d1 = 1.0
-
-  do K = 2,nz
+  do k = 1,nz
      ! numerator of Q_k
-     b_denom_1 = 1. + d1 * k_grid(k-1)
+     b_denom_1 = 1. + d1 * k_grid(K-1)
      ! update denominator for k
-     b1 = 1.0 / (b_denom_1 + k_grid(k))
+     b1 = 1.0 / (b_denom_1 + k_grid(K))
 
-     c1(K) = k_grid(k) * b1
+     c1(k) = k_grid(K) * b1
      d1 = b_denom_1 * b1
 
      ! forward elimination
-     h(K) = b1 * (h(K) + k_grid(k-1) * h(K-1))
+     h(k) = b1 * (h(k) + k_grid(K-1) * h(k-1))
   end do
 
   ! backward substitution
-  do K = nz,2,-1
-     h(K) = h(K) + c1(K) * h(K+1)
+  do k = nz,1,-1
+     h(k) = h(k) + c1(k) * h(k+1)
   end do
 end subroutine build_adapt_column
 
