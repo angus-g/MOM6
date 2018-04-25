@@ -159,7 +159,7 @@ subroutine build_adapt_column(CS, G, GV, h, k_in, i, j)
   end do
 
   ! backward substitution
-  do k = nz,1,-1
+  do k = nz-1,1,-1
     h(k) = h(k) + c1(k) * h(k+1)
   end do
 end subroutine build_adapt_column
