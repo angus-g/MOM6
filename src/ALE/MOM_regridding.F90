@@ -1539,12 +1539,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   integer :: i, j, k, nz ! indices and dimension lengths
 
   ! temperature and salinity on interfaces
-  real, dimension(SZI_(G),SZJ_(G)) :: t_int, s_int
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: t_int, s_int
   ! interface heights
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: z_int, z_new, h_int
   ! drho/dt and drho/ds on interfaces
-  real, dimension(SZI_(G),SZJ_(G)) :: alpha_int, alpha_int_kp1
-  real, dimension(SZI_(G),SZJ_(G)) :: beta_int, beta_int_kp1
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: alpha_int
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: beta_int
   ! density and pressure flux components
   real, dimension(SZIB_(G),SZJ_(G)) :: dz_i, dz_p_i
   real, dimension(SZI_(G),SZJB_(G)) :: dz_j, dz_p_j
@@ -1555,7 +1555,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
   ! interface position after adaptivity, mean interface position across basin
   real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd
-  real, dimension(SZK_(GV)-1) :: k_grid
+  real, dimension(2:SZK_(GV)) :: k_grid ! diffusivities defined for interior interfaces only
 
   ! numerator of density term and upstreamed h
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i, hdi_sig_phys
@@ -1649,16 +1649,17 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     if (associated(diag_CS%limiting_smooth)) diag_CS%limiting_smooth(:,:,:) = 0.
     if (associated(diag_CS%limiting_dense)) diag_CS%limiting_dense(:,:,:) = 0.
     if (associated(diag_CS%dk_sig)) diag_CS%dk_sig(:,:,:) = 0.
+    if (associated(diag_CS%k_grid)) diag_CS%k_grid(:,:,:) = 0.
   endif
 
   do K = 2,nz
     do j = G%jsc-2,G%jec+2
       do i = G%isc-2,G%iec+2
-        t_int(i,j) = ( &
+        t_int(i,j,K) = ( &
              tv%t(i,j,k-1) * (h(i,j,k) + GV%H_subroundoff) + &
              tv%t(i,j,k) * (h(i,j,k-1) + GV%H_subroundoff)) / &
              (h(i,j,k-1) + h(i,j,k) + 2*GV%H_subroundoff)
-        s_int(i,j) = ( &
+        s_int(i,j,K) = ( &
              tv%s(i,j,k-1) * (h(i,j,k) + GV%H_subroundoff) + &
              tv%s(i,j,k) * (h(i,j,k-1) + GV%H_subroundoff)) / &
              (h(i,j,k-1) + h(i,j,k) + 2*GV%H_subroundoff)
@@ -1668,12 +1669,12 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         ! s_int(i,j) = 0.5 * (tv%s(i,j,k-1) + tv%s(i,j,k))
       enddo
 
-      call calculate_density_derivs(t_int(:,j), s_int(:,j), -z_int(:,j,K) * GV%H_to_Pa, &
-           alpha_int(:,j), beta_int(:,j), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
+      call calculate_density_derivs(t_int(:,j,K), s_int(:,j,K), -z_int(:,j,K) * GV%H_to_Pa, &
+           alpha_int(:,j,K), beta_int(:,j,K), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
 
       do i = G%isc-2,G%iec+2
-        dk_sig_int(i,j) = alpha_int(i,j) * (tv%t(i,j,k) - tv%t(i,j,k-1)) + &
-             beta_int(i,j) * (tv%s(i,j,k) - tv%s(i,j,k-1))
+        dk_sig_int(i,j) = alpha_int(i,j,K) * (tv%t(i,j,k) - tv%t(i,j,k-1)) + &
+             beta_int(i,j,K) * (tv%s(i,j,k) - tv%s(i,j,k-1))
 
         if (do_diag .and. associated(diag_CS%dk_sig)) diag_CS%dk_sig(i,j,K) = dk_sig_int(i,j)
      enddo
@@ -1682,8 +1683,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate horizontal derivatives on i-points
     do j = G%jsc-2,G%jec+2
       do I = G%isc-2,G%iec+1
-        alpha = 0.5 * (alpha_int(i,j) + alpha_int(i+1,j))
-        beta = 0.5 * (beta_int(i,j) + beta_int(i+1,j))
+        alpha = 0.5 * (alpha_int(i,j,K) + alpha_int(i+1,j,K))
+        beta = 0.5 * (beta_int(i,j,K) + beta_int(i+1,j,K))
 
         if (CS%adapt_CS%twin_grad) then
           ! with the twin gradient method, we only use the gradient
@@ -1701,8 +1702,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
           end if
         else
           ! otherwise, just calculate the gradient directly on the interface
-          di_sig = alpha * (t_int(i+1,j) - t_int(i,j)) &
-               + beta * (s_int(i+1,j) - s_int(i,j))
+          di_sig = alpha * (t_int(i+1,j,K) - t_int(i,j,K)) &
+               + beta * (s_int(i+1,j,K) - s_int(i,j,K))
         end if
 
         dk_sig_u = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i+1,j))
@@ -1733,8 +1734,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate horizontal derivatives on j-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-2,G%iec+2
-        alpha = 0.5 * (alpha_int(i,j) + alpha_int(i,j+1))
-        beta = 0.5 * (beta_int(i,j) + beta_int(i,j+1))
+        alpha = 0.5 * (alpha_int(i,j,K) + alpha_int(i,j+1,K))
+        beta = 0.5 * (beta_int(i,j,K) + beta_int(i,j+1,K))
 
         if (CS%adapt_CS%twin_grad) then
           dj_sig_up = alpha * (tv%t(i,j+1,k-1) - tv%t(i,j,k-1)) &
@@ -1748,8 +1749,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
             dj_sig = sign(min(abs(dj_sig_up), abs(dj_sig_dn)), dj_sig_up)
           end if
         else
-          dj_sig = alpha * (t_int(i,j+1) - t_int(i,j)) &
-               + beta * (s_int(i,j+1) - s_int(i,j))
+          dj_sig = alpha * (t_int(i,j+1,K) - t_int(i,j,K)) &
+               + beta * (s_int(i,j+1,K) - s_int(i,j,K))
         end if
 
         dk_sig_v = 0.5 * (dk_sig_int(i,j) + dk_sig_int(i,j+1))
@@ -1798,7 +1799,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * ts_ratio
 
         if (do_diag .and. associated(diag_CS%denom_u)) &
-             diag_CS%denom_u(I,j,K) = sqrt(i_denom) / (h_on_i(I,j,K) + GV%H_subroundoff)
+             diag_CS%denom_u(I,j,K) = sqrt(i_denom)
 
         dz_p_unlim = dz_i(I,j)
 
@@ -1939,7 +1940,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * ts_ratio
         ! dz_j is now [m2]
         if (do_diag .and. associated(diag_CS%denom_v)) &
-             diag_CS%denom_v(i,J,K) = sqrt(j_denom) / (h_on_j(i,J,K) + GV%H_subroundoff)
+             diag_CS%denom_v(i,J,K) = sqrt(j_denom)
 
         dz_p_unlim = dz_j(i,J)
 
@@ -2146,7 +2147,24 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
      do k = 1,nz
         h_col(k) = h(i,j,k) + (dzInterface(i,j,K) - dzInterface(i,j,K+1))
      enddo
+
+     ! calculate diffusivities
+     do K = 2,nz
+        ! compute diagonal density differences
+        if ((beta_int(i,j,K) * (tv%s(i,j,k-1) - tv%s(i+1,j,k)) > 0) .and. (z_int(i+1,j,K) < z_int(i,j,K)) .or. &
+             (beta_int(i,j,K) * (tv%s(i,j,k-1) - tv%s(i-1,j,k)) > 0) .and. (z_int(i-1,j,K) < z_int(i,j,K))) then
+          ! density inversion to a diagonal neighbour, set finite diffusivity
+          k_grid(K) = CS%adapt_CS%adaptTau ! XXX for the moment, set a constant?
+        else
+          k_grid(K) = 0.
+        end if
+     end do
+
+     if (do_diag .and. associated(diag_CS%k_grid)) &
+          diag_CS%k_grid(i,j,2:nz) = k_grid(:)
+
      ! use h_col(1:nz) because it's declared as nz+1 to use for summing
+     ! XXX we should prbably just declare a correctly-sized variable somewhere
      call build_adapt_column(CS%adapt_CS, G, GV, h_col(1:nz), k_grid, i, j)
 
      ! reconstruct dzInterface after diffusing

@@ -30,6 +30,7 @@ type, public :: adapt_diag_CS
   real, dimension(:,:,:), pointer :: limiting_dense => null()
 
   real, dimension(:,:,:), pointer :: dk_sig => null()
+  real, dimension(:,:,:), pointer :: k_grid => null()
 end type adapt_diag_CS
 
 type, public :: adapt_CS
@@ -124,7 +125,7 @@ subroutine build_adapt_column(CS, G, GV, h, k_in, i, j)
   type(ocean_grid_type),                       intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
   real, dimension(SZK_(GV)), intent(inout) :: h !< Thicknesses to diffuse vertically
-  real, dimension(SZK_(GV)-1), intent(in) :: k_in !< Diffusivity coefficients
+  real, dimension(SZK_(GV)-1), intent(in) :: k_in !< Diffusivity coefficients on interior interfaces
   integer,                                     intent(in)    :: i, j
 
   integer :: k, nz
