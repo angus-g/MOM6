@@ -356,7 +356,7 @@ subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h, diag_CS)
     if (ice_shelf) then
       call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid, frac_shelf_h)
     else
-      call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid, dt=dt, diag_CS=diag_CS)
+      call regridding_main( CS%remapCS, CS%regridCS, G, GV, h, tv, h_new, dzRegrid, dt=dt, diag_CS=diag_CS, u=u, v=v)
     endif
 
     call check_grid( G, GV, h, 0. )

@@ -181,7 +181,7 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
   logical :: coord_is_state_dependent, ierr
   real :: filt_len, strat_tol, index_scale, tmpReal
   real :: dz_fixed_sfc, Rho_avg_depth, nlay_sfc_int
-  real :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth
+  real :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth, adapt_adjustment
   integer :: nz_fixed_sfc, k, nzf(4)
   real, dimension(:), allocatable :: dz     ! Resolution (thickness) in units of coordinate
   real, dimension(:), allocatable :: h_max  ! Maximum layer thicknesses, in m.
@@ -549,9 +549,15 @@ subroutine initialize_regridding(CS, GV, max_depth, param_file, mod, coord_mode,
     call get_param(param_file, mod, "ADAPT_SMOOTH_MIN", adaptSmooth, &
          "Minimum weight toward smoothing term", default=0.)
 
+    call get_param(param_file, mod, "ADAPT_ADJUSTMENT_SCALE", adapt_adjustment, &
+         "Non-dimensional scale for adjusting interface positions when\n"//&
+         "a diagonal convective instability would occur. When set to 1,\n"//&
+         "perform the full adjustment permitted by the local CFL value.", &
+         default=1.0)
+
     call set_regrid_params(CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
          adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=tmpLogical, &
-         adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth)
+         adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adapt_adjustment_scale=adapt_adjustment)
 
     call get_param(param_file, mod, "ADAPT_RESTORING_TIMESCALE", adaptTimescale, &
          "Timescale for adaptivity restoring (default 10 days)", &
@@ -782,7 +788,7 @@ end subroutine end_regridding
 !------------------------------------------------------------------------------
 ! Dispatching regridding routine: regridding & remapping
 !------------------------------------------------------------------------------
-subroutine regridding_main( remapCS, CS, G, GV, h, tv, h_new, dzInterface, frac_shelf_h, conv_adjust, dt, diag_CS)
+subroutine regridding_main( remapCS, CS, G, GV, h, tv, h_new, dzInterface, frac_shelf_h, conv_adjust, dt, diag_CS, u, v)
 !------------------------------------------------------------------------------
 ! This routine takes care of (1) building a new grid and (2) remapping between
 ! the old grid and the new grid. The creation of the new grid can be based
@@ -813,6 +819,8 @@ subroutine regridding_main( remapCS, CS, G, GV, h, tv, h_new, dzInterface, frac_
   logical,                          optional, intent(in   ) :: conv_adjust ! If true, do convective adjustment
   real, optional, intent(in) :: dt !< Current model timestep
   type(adapt_diag_CS), optional, intent(inout) :: diag_CS
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)),  optional, intent(in)    :: u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)),  optional, intent(in)    :: v
 
   ! Local variables
   real :: trickGnuCompiler
@@ -862,7 +870,7 @@ subroutine regridding_main( remapCS, CS, G, GV, h, tv, h_new, dzInterface, frac_
       call calc_h_new_by_dz(CS, G, GV, h, dzInterface, h_new)
 
     case ( REGRIDDING_ADAPTIVE )
-      call build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt=dt, diag_CS=diag_CS)
+      call build_grid_adaptive(G, GV, h, u, v, tv, dzInterface, remapCS, CS, dt=dt, diag_CS=diag_CS)
       call calc_h_new_by_dz(CS, G, GV, h, dzInterface, h_new)
 
     case default
@@ -1524,7 +1532,7 @@ subroutine build_grid_HyCOM1( G, GV, h, tv, h_new, dzInterface, CS )
 
 end subroutine build_grid_HyCOM1
 
-subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_CS)
+subroutine build_grid_adaptive(G, GV, h, u, v, tv, dzInterface, remapCS, CS, dt, diag_CS)
   type(ocean_grid_type),                       intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(in)    :: h    !< Layer thicknesses, in H (usually m or kg m-2)
@@ -1534,17 +1542,19 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   type(regridding_CS),                         intent(in)    :: CS !< Regridding control structure
   real, optional, intent(in) :: dt !< The intended timestep over which this regridding operation applies
   type(adapt_diag_CS), optional, intent(inout) :: diag_CS !< A control structure to receive diag info from regridding
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)),  optional, intent(in)    :: u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)),  optional, intent(in)    :: v
 
   ! local variables
-  integer :: i, j, k, nz ! indices and dimension lengths
+  integer :: i, j, k, k2, kt, nz ! indices and dimension lengths
 
   ! temperature and salinity on interfaces
   real, dimension(SZI_(G),SZJ_(G)) :: t_int, s_int
   ! interface heights
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: z_int, z_new, h_int
   ! drho/dt and drho/ds on interfaces
-  real, dimension(SZI_(G),SZJ_(G)) :: alpha_int, alpha_int_kp1
-  real, dimension(SZI_(G),SZJ_(G)) :: beta_int, beta_int_kp1
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: alpha_int
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: beta_int
   ! density and pressure flux components
   real, dimension(SZIB_(G),SZJ_(G)) :: dz_i, dz_p_i
   real, dimension(SZI_(G),SZJB_(G)) :: dz_j, dz_p_j
@@ -1553,8 +1563,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   ! final change in interface height
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: dz_a, dz_p, dz_r
 
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: h_upd
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1) :: w
+
   ! interface position after adaptivity, mean interface position across basin
-  real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_upd
+  real, dimension(SZK_(GV)+1) :: z_mean, h_col, z_col, z_upd
 
   ! numerator of density term and upstreamed h
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)+1) :: hdi_sig, h_on_i, hdi_sig_phys
@@ -1571,6 +1584,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   real :: ts_ratio, slope, phys_slope
   real :: global_z_sum, global_h_sum
   real :: dz_p_unlim
+  real :: tmp, dir, CFL
+  real :: dsig_horiz, dsig_vert_up, dsig_vert_down
 
   ! whether we need to provide diagnostics out to the calling routine
   logical :: do_diag, valid
@@ -1633,6 +1648,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
   dz_a(:,:,1) = 0. ; dz_a(:,:,nz+1) = 0.
   dz_p(:,:,1) = 0. ; dz_p(:,:,nz+1) = 0.
   dz_r(:,:,1) = 0. ; dz_r(:,:,nz+1) = 0.
+  w(:,:,1) = 0. ; w(:,:,nz+1) = 0.
 
   ts_ratio = dt / CS%adapt_CS%adaptTimescale
   ts_ratio = min(ts_ratio, 1.0)
@@ -1668,11 +1684,11 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
       enddo
 
       call calculate_density_derivs(t_int(:,j), s_int(:,j), -z_int(:,j,K) * GV%H_to_Pa, &
-           alpha_int(:,j), beta_int(:,j), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
+           alpha_int(:,j,K), beta_int(:,j,K), G%isc-2, G%iec+2 - (G%isc-2) + 1, tv%eqn_of_state)
 
       do i = G%isc-2,G%iec+2
-        dk_sig_int(i,j) = alpha_int(i,j) * (tv%t(i,j,k) - tv%t(i,j,k-1)) + &
-             beta_int(i,j) * (tv%s(i,j,k) - tv%s(i,j,k-1))
+        dk_sig_int(i,j) = alpha_int(i,j,K) * (tv%t(i,j,k) - tv%t(i,j,k-1)) + &
+             beta_int(i,j,K) * (tv%s(i,j,k) - tv%s(i,j,k-1))
 
         if (do_diag .and. associated(diag_CS%dk_sig)) diag_CS%dk_sig(i,j,K) = dk_sig_int(i,j)
      enddo
@@ -1681,8 +1697,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate horizontal derivatives on i-points
     do j = G%jsc-2,G%jec+2
       do I = G%isc-2,G%iec+1
-        alpha = 0.5 * (alpha_int(i,j) + alpha_int(i+1,j))
-        beta = 0.5 * (beta_int(i,j) + beta_int(i+1,j))
+        alpha = 0.5 * (alpha_int(i,j,K) + alpha_int(i+1,j,K))
+        beta = 0.5 * (beta_int(i,j,K) + beta_int(i+1,j,K))
 
         if (CS%adapt_CS%twin_grad) then
           ! with the twin gradient method, we only use the gradient
@@ -1732,8 +1748,8 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
     ! calculate horizontal derivatives on j-points
     do J = G%jsc-2,G%jec+1
       do i = G%isc-2,G%iec+2
-        alpha = 0.5 * (alpha_int(i,j) + alpha_int(i,j+1))
-        beta = 0.5 * (beta_int(i,j) + beta_int(i,j+1))
+        alpha = 0.5 * (alpha_int(i,j,K) + alpha_int(i,j+1,K))
+        beta = 0.5 * (beta_int(i,j,K) + beta_int(i,j+1,K))
 
         if (CS%adapt_CS%twin_grad) then
           dj_sig_up = alpha * (tv%t(i,j+1,k-1) - tv%t(i,j,k-1)) &
@@ -1797,7 +1813,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_i(I,j) = -dz_i(I,j) * G%dxCu(I,j)**2 * ts_ratio
 
         if (do_diag .and. associated(diag_CS%denom_u)) &
-             diag_CS%denom_u(I,j,K) = sqrt(i_denom) / (h_on_i(I,j,K) + GV%H_subroundoff)
+             diag_CS%denom_u(I,j,K) = sqrt(i_denom)
 
         dz_p_unlim = dz_i(I,j)
 
@@ -1938,7 +1954,7 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
         dz_j(i,J) = -dz_j(i,J) * G%dyCv(i,J)**2 * ts_ratio
         ! dz_j is now [m2]
         if (do_diag .and. associated(diag_CS%denom_v)) &
-             diag_CS%denom_v(i,J,K) = sqrt(j_denom) / (h_on_j(i,J,K) + GV%H_subroundoff)
+             diag_CS%denom_v(i,J,K) = sqrt(j_denom)
 
         dz_p_unlim = dz_j(i,J)
 
@@ -2143,29 +2159,129 @@ subroutine build_grid_adaptive(G, GV, h, tv, dzInterface, remapCS, CS, dt, diag_
 
         if (CS%adapt_CS%restoringTimescale > 0) &
              dzInterface(i,j,K) = dzInterface(i,j,K) + dz_r(i,j,K)
-     enddo
+      enddo
+
+      ! update h from previous steps
+      do k = 1,nz
+        h_upd(i,j,k) = h(i,j,k) + (dzInterface(i,j,K) - dzInterface(i,j,K+1))
+      enddo
     enddo
   enddo
 
-  ! add restoring term if we haven't disabled it by a negative timescale
-  ! if (CS%adapt_CS%restoringTimescale > 0) then
-  !   do K = 2,nz
-  !     !call adjust_area_mean_to_zero(dz_r(:,:,K), G)
-  !     dzInterface(:,:,K) = dzInterface(:,:,K) + dz_r(:,:,K)
-  !   enddo
-  ! endif
+  if (present(u) .and. present(v)) then
+    w(:,:,:) = 0.
+  ! perform convective/hydrostatic adjustment
+    ! loop is on u-faces because we're considering velocities
+    ! XXX loop bounds are probably wrong somewhere (not conserving heat?)
+  do k=2,nz-1
+    do j=G%jsc-1,G%jec+1
+      do I=G%iscB-1,G%iecB+1
+        ! XXX density here is incorrect after adaptive has moved the grid!
+        ! XXX how do we deal with the equation of state (beta is calculated incorrectly here)
+        if (u(I,j,k) > 0.) then
+          ! calculate difference to adjacent cell, and cell diagonally down
+          beta = 0.5 * (beta_int(i,j,K) + beta_int(i+1,j,K))
+          dsig_horiz = beta * (tv%s(i,j,k) - tv%s(i+1,j,k))
+          dsig_vert_down = beta * (tv%s(i,j,k) - tv%s(i+1,j,k+1))
+          dsig_vert_up = beta * (tv%s(i,j,k) - tv%s(i+1,j,k-1))
+
+          if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
+            ! if we would move into a lighter cell, and would end up convectively unstable
+            ! or if we would move into a lighter cell, and would end up convectively unstable
+
+            ! search for the lowest unstable interface in the next column
+            do k2=k+1,nz
+              if (beta * (tv%s(i,j,k) - tv%s(i+1,j,k2)) < 0) exit
+            enddo
+
+            kt = k2-1
+            CFL = u(I,j,k)*dt/G%dxCu(I,j)
+
+            ! move bottom interface up -- CFL*kss*thickness
+            w(i,j,K+1) = w(i,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                 min(h_upd(i,j,k), sum(h_upd(i+1,j,k+1:kt)))
+          elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
+            do k2=k-1,1,-1
+              if (beta * (tv%s(i,j,k) - tv%s(i+1,j,k2)) > 0) exit
+            enddo
+
+            kt = k2+1
+            CFL = u(I,j,k)*dt/G%dxCu(I,j)
+
+            ! move top interface down
+            w(i,j,K) = w(i,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                 min(h_upd(i,j,k), sum(h_upd(i+1,j,kt:k-1)))
+          endif
+        elseif (u(I,j,k) < 0.) then
+          ! calculate difference to adjacent cell, and cell diagonally down
+          beta = 0.5 * (beta_int(i+1,j,K) + beta_int(i,j,K))
+          dsig_horiz = beta * (tv%s(i+1,j,k) - tv%s(i,j,k))
+          dsig_vert_down = beta * (tv%s(i+1,j,k) - tv%s(i,j,k+1))
+          dsig_vert_up = beta * (tv%s(i+1,j,k) - tv%s(i,j,k-1))
+
+          if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
+            ! if we would move into a lighter cell, and would end up convectively unstable
+            ! or if we would move into a lighter cell, and would end up convectively unstable
+
+            ! search for the lowest unstable interface in the next column
+            do k2=k+1,nz
+              if (beta * (tv%s(i+1,j,k) - tv%s(i,j,k2)) < 0) exit
+            enddo
+
+            kt = k2-1
+            CFL = -u(I,j,k)*dt/G%dxCu(I,j)
+
+            ! move bottom interface up
+            w(i+1,j,K+1) = w(i+1,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                 min(h_upd(i+1,j,k), sum(h_upd(i,j,k+1:kt)))
+          elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
+            do k2=k-1,1,-1
+              if (beta * (tv%s(i+1,j,k) - tv%s(i,j,k2)) > 0) exit
+            enddo
+
+            kt = k2+1
+            CFL = -u(I,j,k)*dt/G%dxCu(I,j)
+
+            ! move top interface down
+            w(i+1,j,K) = w(i+1,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                 min(h_upd(i+1,j,k), sum(h_upd(i,j,kt:k-1)))
+          endif ! end dsig_horiz ...
+        endif ! end u(I,j,k) ...
+     enddo ! end I loop
+   enddo ! end j loop
+
+   ! XXX loop on v-faces
+ enddo ! end k loop
+
+ do j=G%jsc-1,G%jec+1
+   do i=G%isc-1,G%iec+1
+     if (G%mask2dT(i,j) < 0.5) cycle
+
+     !h_new(k) = h_old(k) + (w(i,j,K) - w(i,j,K+1)) > 0
+     do K=nz,2,-1
+       ! w(i,j,K) > w(i,j,K+1) - h_old
+       ! XXX 512 is a fun constant
+       w(i,j,K) = max(w(i,j,K), w(i,j,K+1) - 0.498 * h_upd(i,j,k))
+     enddo
+
+     do K=1,nz-1
+       ! w(i,j,K+1) < h_old + w(i,j,K)
+       w(i,j,K+1) = min(w(i,j,K+1), 0.498 * h_upd(i,j,k) + w(i,j,K))
+     enddo
+
+     ! apply w to dzInterface
+     !   h_new(i,j,k) = max( 0., h(i,j,k) + ( dzInterface(i,j,k) - dzInterface(i,j,k+1) ) )
+     dzInterface(i,j,:) = dzInterface(i,j,:) + w(i,j,:)
+   enddo
+ enddo
+
+ if (do_diag .and. associated(diag_CS%w_adjust)) &
+      diag_CS%w_adjust(:,:,:) = w(:,:,:)
+ endif ! present(u) .and. present(v)
 
   do j = G%jsc-1,G%jec+1
      do i = G%isc-1,G%iec+1
         call check_grid_column(nz, G%bathyT(i,j), h(i,j,:), dzInterface(i,j,:), 'in build_grid_adaptive', i, j, is_fatal=.false., was_valid=valid)
-
-        if (.not. valid) then
-           z_upd(:) = z_int(i,j,:) + dz_p(i,j,:)
-
-           do K = 1,nz+1
-              write (0,*) 'k,z_int,z_upd,z_mean,z_mean(lim),dz_r', K, z_int(i,j,K), z_upd(K), z_mean(K), max(min(z_mean(K), z_upd(1)), z_upd(nz+1)), dz_r(i,j,K)
-           enddo
-        endif
      enddo
   enddo
 end subroutine build_grid_adaptive
@@ -2784,7 +2900,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              halocline_strat_tol, integrate_downward_for_e, &
              adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, &
              adaptMean, adaptTwin, adaptCutoff, adaptSmooth, adaptPhysicalSlope, &
-             adaptRestoringTimescale, adaptRestoreMean)
+             adaptRestoringTimescale, adaptRestoreMean, adapt_adjustment_scale)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness !< Minimum thickness allowed when building the new grid (m)
@@ -2802,6 +2918,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: halocline_strat_tol !< Value of the stratification ratio that defines a problematic halocline region.
   logical, optional, intent(in) :: integrate_downward_for_e !< If true, integrate for interface positions downward from the top.
   real, optional, intent(in) :: adaptAlphaRho, adaptAlphaP, adaptTimescale, adaptTau, adaptCutoff, adaptSmooth, adaptRestoringTimescale
+  real, optional, intent(in) :: adapt_adjustment_scale
   logical, optional, intent(in) :: adaptMean, adaptTwin, adaptPhysicalSlope, adaptRestoreMean
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
@@ -2853,7 +2970,9 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   case (REGRIDDING_ADAPTIVE)
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, adaptAlphaRho=adaptAlphaRho, adaptAlphaP=adaptAlphaP, &
-         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope, restoringTimescale=adaptRestoringTimescale, restoreMean=adaptRestoreMean)
+         adaptTimescale=adaptTimescale, adaptTau=adaptTau, adaptMean=adaptMean, adaptTwin=adaptTwin, &
+         adaptCutoff=adaptCutoff, adaptSmooth=adaptSmooth, adaptPhysicalSlope=adaptPhysicalSlope, &
+         restoringTimescale=adaptRestoringTimescale, restoreMean=adaptRestoreMean, adjustment_scale=adapt_adjustment_scale)
   end select
 
 end subroutine set_regrid_params
