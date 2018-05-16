@@ -2170,114 +2170,207 @@ subroutine build_grid_adaptive(G, GV, h, u, v, tv, dzInterface, remapCS, CS, dt,
 
   if (present(u) .and. present(v)) then
     w(:,:,:) = 0.
-  ! perform convective/hydrostatic adjustment
+    ! perform convective/hydrostatic adjustment
     ! loop is on u-faces because we're considering velocities
-    ! XXX loop bounds are probably wrong somewhere (not conserving heat?)
-  do k=2,nz-1
+    do k=2,nz-1
+      do j=G%jsc-1,G%jec+1
+        do I=G%iscB-1,G%iecB+1
+          ! XXX density here is incorrect after adaptive has moved the grid!
+          ! XXX how do we deal with the equation of state (beta is calculated incorrectly here)
+          if (u(I,j,k) > 0.) then
+            ! calculate difference to adjacent cell, and cell diagonally down
+            alpha = 0.5 * (alpha_int(i,j,K) + alpha_int(i+1,j,K))
+            beta = 0.5 * (beta_int(i,j,K) + beta_int(i+1,j,K))
+
+            dsig_horiz = alpha * (tv%t(i,j,k) - tv%t(i+1,j,k)) &
+                 + beta * (tv%s(i,j,k) - tv%s(i+1,j,k))
+            dsig_vert_down = alpha * (tv%t(i,j,k) - tv%t(i+1,j,k+1)) &
+                 + beta * (tv%s(i,j,k) - tv%s(i+1,j,k+1))
+            dsig_vert_up = alpha * (tv%t(i,j,k) - tv%t(i+1,j,k-1)) &
+                 + beta * (tv%s(i,j,k) - tv%s(i+1,j,k-1))
+
+            if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
+              ! if we would move into a lighter cell, and would end up convectively unstable
+              ! or if we would move into a lighter cell, and would end up convectively unstable
+
+              ! search for the lowest unstable interface in the next column
+              do k2=k+1,nz
+                if (alpha * (tv%t(i,j,k) - tv%t(i+1,j,k2)) + beta * (tv%s(i,j,k) - tv%s(i+1,j,k2)) < 0) exit
+              enddo
+
+              kt = k2-1
+              CFL = u(I,j,k)*dt/G%dxCu(I,j)
+
+              ! move bottom interface up -- CFL*kss*thickness
+              w(i,j,K+1) = w(i,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i,j,k), sum(h_upd(i+1,j,k+1:kt)))
+            elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
+              do k2=k-1,1,-1
+                if (alpha * (tv%t(i,j,k) - tv%t(i+1,j,k2)) + beta * (tv%s(i,j,k) - tv%s(i+1,j,k2)) > 0) exit
+              enddo
+
+              kt = k2+1
+              CFL = u(I,j,k)*dt/G%dxCu(I,j)
+
+              ! move top interface down
+              w(i,j,K) = w(i,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i,j,k), sum(h_upd(i+1,j,kt:k-1)))
+            endif
+          elseif (u(I,j,k) < 0.) then
+            ! calculate difference to adjacent cell, and cell diagonally down
+            alpha = 0.5 * (alpha_int(i+1,j,K) + alpha_int(i,j,K))
+            beta = 0.5 * (beta_int(i+1,j,K) + beta_int(i,j,K))
+
+            dsig_horiz = alpha * (tv%t(i+1,j,k) - tv%t(i,j,k)) &
+                 + beta * (tv%s(i+1,j,k) - tv%s(i,j,k))
+            dsig_vert_down = alpha * (tv%t(i+1,j,k) - tv%t(i,j,k+1)) &
+                 + beta * (tv%s(i+1,j,k) - tv%s(i,j,k+1))
+            dsig_vert_up = alpha * (tv%t(i+1,j,k) - tv%t(i,j,k-1)) &
+                 + beta * (tv%s(i+1,j,k) - tv%s(i,j,k-1))
+
+            if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
+              ! if we would move into a lighter cell, and would end up convectively unstable
+              ! or if we would move into a lighter cell, and would end up convectively unstable
+
+              ! search for the lowest unstable interface in the next column
+              do k2=k+1,nz
+                if (alpha * (tv%t(i+1,j,k) - tv%t(i,j,k2)) + beta * (tv%s(i+1,j,k) - tv%s(i,j,k2)) < 0) exit
+              enddo
+
+              kt = k2-1
+              CFL = -u(I,j,k)*dt/G%dxCu(I,j)
+
+              ! move bottom interface up
+              w(i+1,j,K+1) = w(i+1,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i+1,j,k), sum(h_upd(i,j,k+1:kt)))
+            elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
+              do k2=k-1,1,-1
+                if (alpha * (tv%t(i+1,j,k) - tv%t(i,j,k2)) + beta * (tv%s(i+1,j,k) - tv%s(i,j,k2)) > 0) exit
+              enddo
+
+              kt = k2+1
+              CFL = -u(I,j,k)*dt/G%dxCu(I,j)
+
+              ! move top interface down
+              w(i+1,j,K) = w(i+1,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i+1,j,k), sum(h_upd(i,j,kt:k-1)))
+            endif ! end dsig_horiz ...
+          endif ! end u(I,j,k) ...
+        enddo ! end I loop
+      enddo ! end j loop
+
+      do J=G%jscB-1,G%jecB+1
+        do i=G%isc-1,G%iec+1
+          ! XXX density here is incorrect after adaptive has moved the grid!
+          ! XXX how do we deal with the equation of state (beta is calculated incorrectly here)
+          if (v(i,J,k) > 0.) then
+            ! calculate difference to adjacent cell, and cell diagonally down
+            alpha = 0.5 * (alpha_int(i,j,K) + alpha_int(i,j+1,K))
+            beta = 0.5 * (beta_int(i,j,K) + beta_int(i,j+1,K))
+
+            dsig_horiz = alpha * (tv%t(i,j,k) - tv%t(i,j+1,k)) &
+                 + beta * (tv%s(i,j,k) - tv%s(i,j+1,k))
+            dsig_vert_down = alpha * (tv%t(i,j,k) - tv%t(i,j+1,k+1)) &
+                 + beta * (tv%s(i,j,k) - tv%s(i,j+1,k+1))
+            dsig_vert_up = alpha * (tv%t(i,j,k) - tv%t(i,j+1,k-1)) &
+                 + beta * (tv%s(i,j,k) - tv%s(i,j+1,k-1))
+
+            if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
+              ! if we would move into a lighter cell, and would end up convectively unstable
+              ! or if we would move into a lighter cell, and would end up convectively unstable
+
+              ! search for the lowest unstable interface in the next column
+              do k2=k+1,nz
+                if (alpha * (tv%t(i,j,k) - tv%t(i,j+1,k2)) + beta * (tv%s(i,j,k) - tv%s(i,j+1,k2)) < 0) exit
+              enddo
+
+              kt = k2-1
+              CFL = v(i,J,k)*dt/G%dyCv(i,J)
+
+              ! move bottom interface up -- CFL*kss*thickness
+              w(i,j,K+1) = w(i,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i,j,k), sum(h_upd(i,j+1,k+1:kt)))
+            elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
+              do k2=k-1,1,-1
+                if (alpha * (tv%t(i,j,k) - tv%t(i,j+1,k2)) + beta * (tv%s(i,j,k) - tv%s(i,j+1,k2)) > 0) exit
+              enddo
+
+              kt = k2+1
+              CFL = v(i,J,k)*dt/G%dyCv(i,J)
+
+              ! move top interface down
+              w(i,j,K) = w(i,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i,j,k), sum(h_upd(i,j+1,kt:k-1)))
+            endif
+          elseif (v(i,J,k) < 0.) then
+            ! calculate difference to adjacent cell, and cell diagonally down
+            alpha = 0.5 * (alpha_int(i,j+1,K) + alpha_int(i,j,K))
+            beta = 0.5 * (beta_int(i,j+1,K) + beta_int(i,j,K))
+
+            dsig_horiz = alpha * (tv%t(i,j+1,k) - tv%t(i,j,k)) &
+                 + beta * (tv%s(i,j+1,k) - tv%s(i,j,k))
+            dsig_vert_down = alpha * (tv%t(i,j+1,k) - tv%t(i,j,k+1)) &
+                 + beta * (tv%s(i,j+1,k) - tv%s(i,j,k+1))
+            dsig_vert_up = alpha * (tv%t(i,j+1,k) - tv%t(i,j,k-1)) &
+                 + beta * (tv%s(i,j+1,k) - tv%s(i,j,k-1))
+
+            if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
+              ! if we would move into a lighter cell, and would end up convectively unstable
+              ! or if we would move into a lighter cell, and would end up convectively unstable
+
+              ! search for the lowest unstable interface in the next column
+              do k2=k+1,nz
+                if (alpha * (tv%t(i,j+1,k) - tv%t(i,j,k2)) + beta * (tv%s(i,j+1,k) - tv%s(i,j,k2)) < 0) exit
+              enddo
+
+              kt = k2-1
+              CFL = -v(i,J,k)*dt/G%dyCv(i,J)
+
+              ! move bottom interface up
+              w(i,j+1,K+1) = w(i,j+1,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i,j+1,k), sum(h_upd(i,j,k+1:kt)))
+            elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
+              do k2=k-1,1,-1
+                if (alpha * (tv%t(i,j+1,k) - tv%t(i,j,k2)) + beta * (tv%s(i,j+1,k) - tv%s(i,j,k2)) > 0) exit
+              enddo
+
+              kt = k2+1
+              CFL = -v(i,J,k)*dt/G%dyCv(i,J)
+
+              ! move top interface down
+              w(i,j+1,K) = w(i,j+1,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
+                   min(h_upd(i,j+1,k), sum(h_upd(i,j,kt:k-1)))
+            endif ! end dsig_horiz ...
+          endif ! end u(I,j,k) ...
+        enddo ! end I loop
+      enddo ! end j loop
+    enddo ! end k loop
+
     do j=G%jsc-1,G%jec+1
-      do I=G%iscB-1,G%iecB+1
-        ! XXX density here is incorrect after adaptive has moved the grid!
-        ! XXX how do we deal with the equation of state (beta is calculated incorrectly here)
-        if (u(I,j,k) > 0.) then
-          ! calculate difference to adjacent cell, and cell diagonally down
-          beta = 0.5 * (beta_int(i,j,K) + beta_int(i+1,j,K))
-          dsig_horiz = beta * (tv%s(i,j,k) - tv%s(i+1,j,k))
-          dsig_vert_down = beta * (tv%s(i,j,k) - tv%s(i+1,j,k+1))
-          dsig_vert_up = beta * (tv%s(i,j,k) - tv%s(i+1,j,k-1))
+      do i=G%isc-1,G%iec+1
+        if (G%mask2dT(i,j) < 0.5) cycle
 
-          if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
-            ! if we would move into a lighter cell, and would end up convectively unstable
-            ! or if we would move into a lighter cell, and would end up convectively unstable
+        !h_new(k) = h_old(k) + (w(i,j,K) - w(i,j,K+1)) > 0
+        do K=nz,2,-1
+          ! w(i,j,K) > w(i,j,K+1) - h_old
+          ! don't apply exactly at CFL
+          w(i,j,K) = max(w(i,j,K), w(i,j,K+1) - 0.498 * h_upd(i,j,k))
+        enddo
 
-            ! search for the lowest unstable interface in the next column
-            do k2=k+1,nz
-              if (beta * (tv%s(i,j,k) - tv%s(i+1,j,k2)) < 0) exit
-            enddo
+        do K=1,nz-1
+          ! w(i,j,K+1) < h_old + w(i,j,K)
+          w(i,j,K+1) = min(w(i,j,K+1), 0.498 * h_upd(i,j,k) + w(i,j,K))
+        enddo
 
-            kt = k2-1
-            CFL = u(I,j,k)*dt/G%dxCu(I,j)
+        ! apply w to dzInterface
+        !   h_new(i,j,k) = max( 0., h(i,j,k) + ( dzInterface(i,j,k) - dzInterface(i,j,k+1) ) )
+        dzInterface(i,j,:) = dzInterface(i,j,:) + w(i,j,:)
+      enddo
+    enddo
 
-            ! move bottom interface up -- CFL*kss*thickness
-            w(i,j,K+1) = w(i,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
-                 min(h_upd(i,j,k), sum(h_upd(i+1,j,k+1:kt)))
-          elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
-            do k2=k-1,1,-1
-              if (beta * (tv%s(i,j,k) - tv%s(i+1,j,k2)) > 0) exit
-            enddo
-
-            kt = k2+1
-            CFL = u(I,j,k)*dt/G%dxCu(I,j)
-
-            ! move top interface down
-            w(i,j,K) = w(i,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
-                 min(h_upd(i,j,k), sum(h_upd(i+1,j,kt:k-1)))
-          endif
-        elseif (u(I,j,k) < 0.) then
-          ! calculate difference to adjacent cell, and cell diagonally down
-          beta = 0.5 * (beta_int(i+1,j,K) + beta_int(i,j,K))
-          dsig_horiz = beta * (tv%s(i+1,j,k) - tv%s(i,j,k))
-          dsig_vert_down = beta * (tv%s(i+1,j,k) - tv%s(i,j,k+1))
-          dsig_vert_up = beta * (tv%s(i+1,j,k) - tv%s(i,j,k-1))
-
-          if (dsig_horiz > 0 .and. dsig_vert_down > 0) then
-            ! if we would move into a lighter cell, and would end up convectively unstable
-            ! or if we would move into a lighter cell, and would end up convectively unstable
-
-            ! search for the lowest unstable interface in the next column
-            do k2=k+1,nz
-              if (beta * (tv%s(i+1,j,k) - tv%s(i,j,k2)) < 0) exit
-            enddo
-
-            kt = k2-1
-            CFL = -u(I,j,k)*dt/G%dxCu(I,j)
-
-            ! move bottom interface up
-            w(i+1,j,K+1) = w(i+1,j,K+1) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
-                 min(h_upd(i+1,j,k), sum(h_upd(i,j,k+1:kt)))
-          elseif (dsig_horiz < 0 .and. dsig_vert_up < 0) then
-            do k2=k-1,1,-1
-              if (beta * (tv%s(i+1,j,k) - tv%s(i,j,k2)) > 0) exit
-            enddo
-
-            kt = k2+1
-            CFL = -u(I,j,k)*dt/G%dxCu(I,j)
-
-            ! move top interface down
-            w(i+1,j,K) = w(i+1,j,K) + CS%adapt_CS%adjustment_scale * CFL * (kt-k) * &
-                 min(h_upd(i+1,j,k), sum(h_upd(i,j,kt:k-1)))
-          endif ! end dsig_horiz ...
-        endif ! end u(I,j,k) ...
-     enddo ! end I loop
-   enddo ! end j loop
-
-   ! XXX loop on v-faces
- enddo ! end k loop
-
- do j=G%jsc-1,G%jec+1
-   do i=G%isc-1,G%iec+1
-     if (G%mask2dT(i,j) < 0.5) cycle
-
-     !h_new(k) = h_old(k) + (w(i,j,K) - w(i,j,K+1)) > 0
-     do K=nz,2,-1
-       ! w(i,j,K) > w(i,j,K+1) - h_old
-       ! XXX 512 is a fun constant
-       w(i,j,K) = max(w(i,j,K), w(i,j,K+1) - 0.498 * h_upd(i,j,k))
-     enddo
-
-     do K=1,nz-1
-       ! w(i,j,K+1) < h_old + w(i,j,K)
-       w(i,j,K+1) = min(w(i,j,K+1), 0.498 * h_upd(i,j,k) + w(i,j,K))
-     enddo
-
-     ! apply w to dzInterface
-     !   h_new(i,j,k) = max( 0., h(i,j,k) + ( dzInterface(i,j,k) - dzInterface(i,j,k+1) ) )
-     dzInterface(i,j,:) = dzInterface(i,j,:) + w(i,j,:)
-   enddo
- enddo
-
- if (do_diag .and. associated(diag_CS%w_adjust)) &
-      diag_CS%w_adjust(:,:,:) = w(:,:,:)
- endif ! present(u) .and. present(v)
+    if (do_diag .and. associated(diag_CS%w_adjust)) &
+         diag_CS%w_adjust(:,:,:) = w(:,:,:)
+  endif ! present(u) .and. present(v)
 
   do j = G%jsc-1,G%jec+1
      do i = G%isc-1,G%iec+1
