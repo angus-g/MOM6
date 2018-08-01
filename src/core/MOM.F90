@@ -17,6 +17,7 @@ use MOM_diag_mediator,        only : diag_mediator_infrastructure_init
 use MOM_diag_mediator,        only : diag_set_state_ptrs, diag_update_remap_grids
 use MOM_diag_mediator,        only : disable_averaging, post_data, safe_alloc_ptr
 use MOM_diag_mediator,        only : register_diag_field, register_cell_measure
+use MOM_diag_mediator,        only : register_scalar_field
 use MOM_diag_mediator,        only : set_axes_info, diag_ctrl, diag_masks_set
 use MOM_diag_mediator,        only : set_masks_for_axes
 use MOM_diag_mediator,        only : diag_grid_storage, diag_grid_storage_init
@@ -76,6 +77,7 @@ use MOM_dynamics_unsplit_RK2,  only : step_MOM_dyn_unsplit_RK2, register_restart
 use MOM_dynamics_unsplit_RK2,  only : initialize_dyn_unsplit_RK2, end_dyn_unsplit_RK2
 use MOM_dynamics_unsplit_RK2,  only : MOM_dyn_unsplit_RK2_CS
 use MOM_dyn_horgrid,           only : dyn_horgrid_type, create_dyn_horgrid, destroy_dyn_horgrid
+use MOM_energy,                only : calculate_RPE_init, calculate_RPE, rpe_CS
 use MOM_EOS,                   only : EOS_init, calculate_density
 use MOM_EOS,                   only : gsw_sp_from_sr, gsw_pt_from_ct
 use MOM_debugging,             only : check_redundant
@@ -158,6 +160,13 @@ type MOM_diag_IDs
   integer :: id_adapt_lim_dense = -1
   integer :: id_adapt_dk_sig = -1
   integer :: id_adapt_w_adjust = -1
+
+  integer :: id_RPE_predyn = -1
+  integer :: id_RPE_postdyn = -1
+  integer :: id_RPE_dyndiff = -1
+  integer :: id_RPE_preale = -1
+  integer :: id_RPE_postale = -1
+  integer :: id_RPE_alediff = -1
 end type MOM_diag_IDs
 
 !> Control structure for the MOM module, including the variables that describe
@@ -346,6 +355,8 @@ type, public :: MOM_control_struct ; private
   type(diag_to_Z_CS),            pointer :: diag_to_Z_CSp          => NULL()
   type(offline_transport_CS),    pointer :: offline_CSp            => NULL()
 
+  type(rpe_CS), pointer :: rpe_CSp => NULL()
+
 end type MOM_control_struct
 
 public initialize_MOM, finish_MOM_initialization, MOM_end
@@ -372,6 +383,7 @@ integer :: id_clock_pass_init  ! also in dynamics d/r
 integer :: id_clock_ALE
 integer :: id_clock_other
 integer :: id_clock_offline_tracer
+integer :: id_clock_rpe
 
 contains
 
@@ -839,6 +851,7 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     u, & ! u : zonal velocity component (m/s)
     v, & ! v : meridional velocity component (m/s)
     h    ! h : layer thickness (meter (Bouss) or kg/m2 (non-Bouss))
+  real :: rpe_predyn, rpe_postdyn
 
   logical :: calc_dtbt                 ! Indicates whether the dynamically adjusted
                                        ! barotropic time step needs to be updated.
@@ -887,6 +900,16 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     if (showCallTree) call callTree_wayPoint("done with set_viscous_BBL (step_MOM)")
     call disable_averaging(CS%diag)
   endif
+
+  ! calculate pre-dynamics RPE
+  if (CS%do_dynamics .and. IDs%id_RPE_predyn > 0) then
+    call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_rpe)
+    call enable_averaging(dt, Time_local, CS%diag)
+    call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_predyn)
+    call post_data(IDs%id_RPE_predyn, rpe_predyn, CS%diag)
+    call disable_averaging(CS%diag)
+    call cpu_clock_end(id_clock_rpe) ; call cpu_clock_end(id_clock_other)
+  end if
 
   if (CS%do_dynamics .and. CS%split) then !--------------------------- start SPLIT
     ! This section uses a split time stepping scheme for the dynamic equations,
@@ -984,6 +1007,14 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
   if (IDs%id_u > 0) call post_data(IDs%id_u, u, CS%diag)
   if (IDs%id_v > 0) call post_data(IDs%id_v, v, CS%diag)
   if (IDs%id_h > 0) call post_data(IDs%id_h, h, CS%diag)
+
+  if (IDs%id_RPE_postdyn > 0) then
+    call cpu_clock_begin(id_clock_rpe)
+    call calculate_RPE(CS%RPE_CSp, G, GV, h, CS%tv, rpe_postdyn)
+    call post_data(IDs%id_RPE_postdyn, rpe_postdyn, CS%diag)
+    call cpu_clock_end(id_clock_rpe)
+  end if
+  if (IDs%id_RPE_dyndiff > 0) call post_data(IDs%id_RPE_dyndiff, rpe_postdyn - rpe_predyn, CS%diag)
   call disable_averaging(CS%diag)
   call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
 
@@ -1080,6 +1111,7 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), target :: phys_v, slope_v, denom_v, coord_v
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), target :: limiting_smooth, limiting_dense, dk_sig, &
        w_adjust
+  real :: rpe_preale, rpe_postale
 
   integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
   logical :: use_ice_shelf ! Needed for selecting the right ALE interface.
@@ -1159,6 +1191,13 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
 
       call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
 
+      if (CS%IDs%id_RPE_preale > 0) then
+        call cpu_clock_begin(id_clock_RPE)
+        call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_preale)
+        call post_data(CS%IDs%id_RPE_preale, rpe_preale, CS%diag)
+        call cpu_clock_end(id_clock_RPE)
+      end if
+
       if (CS%debug) then
         call MOM_state_chksum("Pre-ALE ", u, v, h, CS%uh, CS%vh, G, GV)
         call hchksum(tv%T,"Pre-ALE T", G%HI, haloshift=1)
@@ -1186,6 +1225,14 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
       if (CS%IDs%id_adapt_lim_dense > 0) call post_data(CS%IDs%id_adapt_lim_dense, limiting_dense, CS%diag)
       if (CS%IDs%id_adapt_dk_sig > 0) call post_data(CS%IDs%id_adapt_dk_sig, dk_sig, CS%diag)
       if (CS%IDs%id_adapt_w_adjust > 0) call post_data(CS%IDs%id_adapt_w_adjust, w_adjust, CS%diag)
+
+      if (CS%IDs%id_RPE_postale > 0) then
+        call cpu_clock_begin(id_clock_RPE)
+        call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_postale)
+        call post_data(CS%IDs%id_RPE_postale, rpe_postale, CS%diag)
+        call cpu_clock_end(id_clock_RPE)
+      end if
+      if (CS%IDs%id_RPE_alediff > 0) call post_data(CS%IDs%id_RPE_alediff, rpe_postale - rpe_preale, CS%diag)
 
       if (showCallTree) call callTree_waypoint("finished ALE_main (step_MOM_thermo)")
       call cpu_clock_end(id_clock_ALE)
@@ -1917,6 +1964,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
 
   call tracer_registry_init(param_file, CS%tracer_Reg)
 
+  call calculate_RPE_init(CS%rpe_CSp)
+
   ! Allocate and initialize space for the primary time-varying MOM variables.
   is   = dG%isc   ; ie   = dG%iec  ; js   = dG%jsc  ; je   = dG%jec ; nz = GV%ke
   isd  = dG%isd   ; ied  = dG%ied  ; jsd  = dG%jsd  ; jed  = dG%jed
@@ -2484,6 +2533,20 @@ subroutine register_diags(Time, G, GV, IDs, diag)
        'Adaptive coordinate vertical density difference')
   IDs%id_adapt_w_adjust = register_diag_field('ocean_model', 'adapt_w_adjust', diag%axesTi, Time, &
        'Adaptive coordinate interface velocity due to hydrostatic adjustment')
+
+  IDs%id_RPE_predyn = register_scalar_field('ocean_model', 'RPE_predyn', Time, diag, &
+       long_name='Instantaneous RPE before dynamics', units='W/m2')
+  IDs%id_RPE_postdyn = register_scalar_field('ocean_model', 'RPE_postdyn', Time, diag, &
+       long_name='Instantaneous RPE after dynamics', units='W/m2')
+  IDs%id_RPE_dyndiff = register_scalar_field('ocean_model', 'RPE_dyndiff', Time, diag, &
+       long_name='Instantaneous RPE difference across dynamics', units='W/m2')
+  IDs%id_RPE_preale = register_scalar_field('ocean_model', 'RPE_preale', Time, diag, &
+       long_name='Instantaneous RPE before ALE', units='W/m2')
+  IDs%id_RPE_postale = register_scalar_field('ocean_model', 'RPE_postale', Time, diag, &
+       long_name='Instantaneous RPE after ALE', units='W/m2')
+  IDs%id_RPE_alediff = register_scalar_field('ocean_model', 'RPE_alediff', Time, diag, &
+       long_name='Instantaneous RPE difference across ALE', units='W/m2')
+
 end subroutine register_diags
 
 !> This subroutine sets up clock IDs for timing various subroutines.
@@ -2511,8 +2574,9 @@ subroutine MOM_timing_init(CS)
  id_clock_Z_diag       = cpu_clock_id('(Ocean Z-space diagnostics)', grain=CLOCK_MODULE)
  id_clock_ALE          = cpu_clock_id('(Ocean ALE)', grain=CLOCK_MODULE)
  if (CS%offline_tracer_mode) then
-  id_clock_offline_tracer = cpu_clock_id('Ocean offline tracers', grain=CLOCK_SUBCOMPONENT)
+   id_clock_offline_tracer = cpu_clock_id('Ocean offline tracers', grain=CLOCK_SUBCOMPONENT)
  endif
+ id_clock_rpe = cpu_clock_id('(Ocean RPE)', grain=CLOCK_SUBCOMPONENT)
 
 end subroutine MOM_timing_init
 
