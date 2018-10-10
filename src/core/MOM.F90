@@ -356,6 +356,7 @@ type, public :: MOM_control_struct ; private
   type(offline_transport_CS),    pointer :: offline_CSp            => NULL()
 
   type(rpe_CS), pointer :: rpe_CSp => NULL()
+  real :: rpe_predyn, rpe_postdyn
 
 end type MOM_control_struct
 
@@ -851,7 +852,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
     u, & ! u : zonal velocity component (m/s)
     v, & ! v : meridional velocity component (m/s)
     h    ! h : layer thickness (meter (Bouss) or kg/m2 (non-Bouss))
-  real :: rpe_predyn, rpe_postdyn
 
   logical :: calc_dtbt                 ! Indicates whether the dynamically adjusted
                                        ! barotropic time step needs to be updated.
@@ -905,8 +905,8 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
   if (CS%do_dynamics .and. IDs%id_RPE_predyn > 0) then
     call cpu_clock_begin(id_clock_other) ; call cpu_clock_begin(id_clock_rpe)
     call enable_averaging(dt, Time_local, CS%diag)
-    call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_predyn)
-    call post_data(IDs%id_RPE_predyn, rpe_predyn, CS%diag)
+    call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, CS%rpe_predyn)
+    call post_data(IDs%id_RPE_predyn, CS%rpe_predyn, CS%diag)
     call disable_averaging(CS%diag)
     call cpu_clock_end(id_clock_rpe) ; call cpu_clock_end(id_clock_other)
   end if
@@ -1007,14 +1007,6 @@ subroutine step_MOM_dynamics(forces, p_surf_begin, p_surf_end, dt, dt_thermo, &
   if (IDs%id_u > 0) call post_data(IDs%id_u, u, CS%diag)
   if (IDs%id_v > 0) call post_data(IDs%id_v, v, CS%diag)
   if (IDs%id_h > 0) call post_data(IDs%id_h, h, CS%diag)
-
-  if (IDs%id_RPE_postdyn > 0) then
-    call cpu_clock_begin(id_clock_rpe)
-    call calculate_RPE(CS%RPE_CSp, G, GV, h, CS%tv, rpe_postdyn)
-    call post_data(IDs%id_RPE_postdyn, rpe_postdyn, CS%diag)
-    call cpu_clock_end(id_clock_rpe)
-  end if
-  if (IDs%id_RPE_dyndiff > 0) call post_data(IDs%id_RPE_dyndiff, rpe_postdyn - rpe_predyn, CS%diag)
   call disable_averaging(CS%diag)
   call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
 
@@ -1066,6 +1058,14 @@ subroutine step_MOM_tracer_dyn(CS, G, GV, h, Time_local)
   ! Rebuild the remap grids now that we've posted the fields which rely on thicknesses
   ! from before the dynamics calls
   call diag_update_remap_grids(CS%diag)
+
+  if (CS%IDs%id_RPE_postdyn > 0 .or. CS%IDs%id_RPE_dyndiff > 0) then
+    call cpu_clock_begin(id_clock_rpe)
+    call calculate_RPE(CS%RPE_CSp, G, GV, h, CS%tv, CS%rpe_postdyn)
+    call cpu_clock_end(id_clock_rpe)
+  end if
+  if (CS%IDs%id_RPE_postdyn > 0) call post_data(CS%IDs%id_RPE_postdyn, CS%rpe_postdyn, CS%diag)
+  if (CS%IDs%id_RPE_dyndiff > 0) call post_data(CS%IDs%id_RPE_dyndiff, CS%rpe_postdyn - CS%rpe_predyn, CS%diag)
 
   call disable_averaging(CS%diag)
   call cpu_clock_end(id_clock_diagnostics) ; call cpu_clock_end(id_clock_other)
@@ -1226,12 +1226,12 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
       if (CS%IDs%id_adapt_dk_sig > 0) call post_data(CS%IDs%id_adapt_dk_sig, dk_sig, CS%diag)
       if (CS%IDs%id_adapt_w_adjust > 0) call post_data(CS%IDs%id_adapt_w_adjust, w_adjust, CS%diag)
 
-      if (CS%IDs%id_RPE_postale > 0) then
+      if (CS%IDs%id_RPE_postale > 0 .or. CS%IDs%id_RPE_alediff > 0) then
         call cpu_clock_begin(id_clock_RPE)
         call calculate_RPE(CS%rpe_CSp, G, GV, h, CS%tv, rpe_postale)
-        call post_data(CS%IDs%id_RPE_postale, rpe_postale, CS%diag)
         call cpu_clock_end(id_clock_RPE)
       end if
+      if (CS%IDs%id_RPE_postale > 0) call post_data(CS%IDs%id_RPE_postale, rpe_postale, CS%diag)
       if (CS%IDs%id_RPE_alediff > 0) call post_data(CS%IDs%id_RPE_alediff, rpe_postale - rpe_preale, CS%diag)
 
       if (showCallTree) call callTree_waypoint("finished ALE_main (step_MOM_thermo)")
