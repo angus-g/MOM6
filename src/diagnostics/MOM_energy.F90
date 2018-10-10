@@ -275,6 +275,8 @@ contains
     ! Scan thickness for a running sum
     call mpi_exscan(total_thickness, local_depth, 1, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
 
+    if (is_root_pe()) local_depth = 0.
+
     ! Calculate depths of local cells and integrate into bucket RPE
     local_RPE = 0.
     do i = 1, bucket_size
