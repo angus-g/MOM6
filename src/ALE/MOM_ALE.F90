@@ -45,6 +45,9 @@ use MOM_tracer_registry,  only : tracer_registry_type, tracer_type, MOM_tracer_c
 use MOM_variables,        only : ocean_grid_type, thermo_var_ptrs
 use MOM_verticalGrid,     only : get_thickness_units, verticalGrid_type
 
+use MOM_cpu_clock, only : cpu_clock_id, cpu_clock_begin, cpu_clock_end
+use MOM_cpu_clock, only : CLOCK_SUBCOMPONENT
+
 use coord_adapt, only : adapt_diag_CS
 
 !use regrid_consts,       only : coordinateMode, DEFAULT_COORDINATE_MODE
@@ -97,6 +100,9 @@ type, public :: ALE_CS ; private
   integer :: id_e_preale = -1 !< diagnostic id for interface heights before ALE.
   integer :: id_vert_remap_h = -1      !< diagnostic id for layer thicknesses used for remapping
   integer :: id_vert_remap_h_tendency = -1 !< diagnostic id for layer thickness tendency due to ALE
+
+  integer :: id_clock_regridding
+  integer :: id_clock_remapping
 
 end type
 
@@ -228,6 +234,9 @@ subroutine ALE_init( param_file, GV, max_depth, CS)
   ! Keep a record of values for subsequent queries
   CS%nk = GV%ke
 
+  CS%id_clock_regridding = cpu_clock_id('(Ocean ALE regridding)', grain=CLOCK_SUBCOMPONENT)
+  CS%id_clock_remapping = cpu_clock_id('(Ocean ALE remapping)', grain=CLOCK_SUBCOMPONENT)
+
   if (CS%show_call_tree) call callTree_leave("ALE_init()")
 end subroutine ALE_init
 
@@ -351,6 +360,7 @@ subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h, diag_CS)
       call diag_update_remap_grids(CS%diag, alt_h = h_new)
     endif
   else
+    call cpu_clock_begin(CS%id_clock_regridding)
     ! Build new grid. The new grid is stored in h_new. The old grid is h.
     ! Both are needed for the subsequent remapping of variables.
     if (ice_shelf) then
@@ -360,6 +370,7 @@ subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h, diag_CS)
     endif
 
     call check_grid( G, GV, h, 0. )
+    call cpu_clock_end(CS%id_clock_regridding)
 
     if (CS%show_call_tree) call callTree_waypoint("new grid generated (ALE_main)")
 
@@ -369,8 +380,10 @@ subroutine ALE_main( G, GV, h, u, v, tv, Reg, CS, dt, frac_shelf_h, diag_CS)
       call diag_update_remap_grids(CS%diag)
     endif
     ! Remap all variables from old grid h onto new grid h_new
+    call cpu_clock_begin(CS%id_clock_remapping)
     call remap_all_state_vars( CS%remapCS, CS, G, GV, h, h_new, Reg, -dzRegrid, &
          u, v, CS%show_call_tree, dt )
+    call cpu_clock_end(CS%id_clock_remapping)
   endif
 
   if (CS%show_call_tree) call callTree_waypoint("state remapped (ALE_main)")

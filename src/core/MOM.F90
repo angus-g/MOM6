@@ -160,6 +160,9 @@ type MOM_diag_IDs
   integer :: id_adapt_lim_dense = -1
   integer :: id_adapt_dk_sig = -1
   integer :: id_adapt_w_adjust = -1
+  integer :: id_adapt_disp_dense = -1
+  integer :: id_adapt_disp_smooth = -1
+  integer :: id_adapt_disp_unlim = -1
 
   integer :: id_RPE_predyn = -1
   integer :: id_RPE_postdyn = -1
@@ -1111,6 +1114,7 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
   real, dimension(SZI_(G),SZJB_(G),SZK_(GV)+1), target :: phys_v, slope_v, denom_v, coord_v
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), target :: limiting_smooth, limiting_dense, dk_sig, &
        w_adjust
+  real, dimension(SZI_(G),SZJ_(G),SZK_(GV)+1), target :: disp_dense, disp_smooth, disp_unlim
   real :: rpe_preale, rpe_postale
 
   integer :: i, j, k, is, ie, js, je, nz! , Isq, Ieq, Jsq, Jeq, n
@@ -1188,6 +1192,9 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
       if (CS%IDs%id_adapt_lim_dense > 0) diag_CS%limiting_dense => limiting_dense
       if (CS%IDs%id_adapt_dk_sig > 0) diag_CS%dk_sig => dk_sig
       if (CS%IDs%id_adapt_w_adjust > 0) diag_CS%w_adjust => w_adjust
+      if (CS%IDs%id_adapt_disp_dense > 0) diag_CS%disp_dense => disp_dense
+      if (CS%IDs%id_adapt_disp_smooth > 0) diag_CS%disp_smooth => disp_smooth
+      if (CS%IDs%id_adapt_disp_unlim > 0) diag_CS%disp_unlim => disp_unlim
 
       call preAle_tracer_diagnostics(CS%tracer_Reg, G, GV)
 
@@ -1225,6 +1232,9 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
       if (CS%IDs%id_adapt_lim_dense > 0) call post_data(CS%IDs%id_adapt_lim_dense, limiting_dense, CS%diag)
       if (CS%IDs%id_adapt_dk_sig > 0) call post_data(CS%IDs%id_adapt_dk_sig, dk_sig, CS%diag)
       if (CS%IDs%id_adapt_w_adjust > 0) call post_data(CS%IDs%id_adapt_w_adjust, w_adjust, CS%diag)
+      if (CS%IDs%id_adapt_disp_dense > 0) call post_data(CS%IDs%id_adapt_disp_dense, disp_dense, CS%diag)
+      if (CS%IDs%id_adapt_disp_smooth > 0) call post_data(CS%IDs%id_adapt_disp_smooth, disp_smooth, CS%diag)
+      if (CS%IDs%id_adapt_disp_unlim > 0) call post_data(CS%IDs%id_adapt_disp_unlim, disp_unlim, CS%diag)
 
       if (CS%IDs%id_RPE_postale > 0 .or. CS%IDs%id_RPE_alediff > 0) then
         call cpu_clock_begin(id_clock_RPE)
@@ -2533,6 +2543,12 @@ subroutine register_diags(Time, G, GV, IDs, diag)
        'Adaptive coordinate vertical density difference')
   IDs%id_adapt_w_adjust = register_diag_field('ocean_model', 'adapt_w_adjust', diag%axesTi, Time, &
        'Adaptive coordinate interface velocity due to hydrostatic adjustment')
+  IDs%id_adapt_disp_dense = register_diag_field('ocean_model', 'adapt_disp_dense', diag%axesTi, Time, &
+       'Adaptive coordinate interface displacement due to density adaptivity')
+  IDs%id_adapt_disp_smooth = register_diag_field('ocean_model', 'adapt_disp_smooth', diag%axesTi, Time, &
+       'Adaptive coordinate interface displacement due to (limited) smoothing')
+  IDs%id_adapt_disp_unlim = register_diag_field('ocean_model', 'adapt_disp_unlim', diag%axesTi, Time, &
+       'Adaptive coordinate interface displacement due to (barotropic) smoothing')
 
   IDs%id_RPE_predyn = register_scalar_field('ocean_model', 'RPE_predyn', Time, diag, &
        long_name='Instantaneous RPE before dynamics', units='W/m2')

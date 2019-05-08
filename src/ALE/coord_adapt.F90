@@ -31,6 +31,10 @@ type, public :: adapt_diag_CS
 
   real, dimension(:,:,:), pointer :: dk_sig => null()
   real, dimension(:,:,:), pointer :: w_adjust => null()
+
+  real, dimension(:,:,:), pointer :: disp_dense => null()
+  real, dimension(:,:,:), pointer :: disp_smooth => null()
+  real, dimension(:,:,:), pointer :: disp_unlim => null()
 end type adapt_diag_CS
 
 type, public :: adapt_CS

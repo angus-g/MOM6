@@ -830,7 +830,7 @@ subroutine set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, optics, visc, dt, &
   endif
 
   if (CS%user_change_diff) then
-    call user_change_diff(h, tv, G, CS%user_change_diff_CSp, Kd, Kd_int, &
+    call user_change_diff(h, tv, G, GV, CS%user_change_diff_CSp, Kd, Kd_int, &
                           T_f, S_f, dd%Kd_user)
   endif
 
