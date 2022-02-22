@@ -461,12 +461,16 @@ subroutine ALE_post_coord_diags(CS)
     if (diag_CS%id_phys_v > 0) call post_data(diag_CS%id_phys_v, diag_CS%phys_v, CS%diag)
     if (diag_CS%id_coord_u > 0) call post_data(diag_CS%id_coord_u, diag_CS%coord_u, CS%diag)
     if (diag_CS%id_coord_v > 0) call post_data(diag_CS%id_coord_v, diag_CS%coord_v, CS%diag)
-    if (diag_CS%id_limiting_density > 0) call post_data(diag_CS%id_limiting_density, diag_CS%limiting_density, CS%diag)
-    if (diag_CS%id_limiting_smoothing > 0) call post_data(diag_CS%id_limiting_smoothing, diag_CS%limiting_smoothing, CS%diag)
+    if (diag_CS%id_limiting_density > 0) &
+         call post_data(diag_CS%id_limiting_density, diag_CS%limiting_density, CS%diag)
+    if (diag_CS%id_limiting_smoothing > 0) &
+         call post_data(diag_CS%id_limiting_smoothing, diag_CS%limiting_smoothing, CS%diag)
     if (diag_CS%id_w_adjust > 0) call post_data(diag_CS%id_w_adjust, diag_CS%w_adjust, CS%diag)
     if (diag_CS%id_disp_density > 0) call post_data(diag_CS%id_disp_density, diag_CS%disp_density, CS%diag)
-    if (diag_CS%id_disp_smoothing > 0) call post_data(diag_CS%id_disp_smoothing, diag_CS%disp_smoothing, CS%diag)
-    if (diag_CS%id_disp_unlimited > 0) call post_data(diag_CS%id_disp_unlimited, diag_CS%disp_unlimited, CS%diag)
+    if (diag_CS%id_disp_smoothing > 0) &
+         call post_data(diag_CS%id_disp_smoothing, diag_CS%disp_smoothing, CS%diag)
+    if (diag_CS%id_disp_unlimited > 0) &
+         call post_data(diag_CS%id_disp_unlimited, diag_CS%disp_unlimited, CS%diag)
   end select
 end subroutine ALE_post_coord_diags
 
@@ -894,7 +898,8 @@ subroutine ALE_regrid_accelerated(CS, G, GV, h, tv, n_itt, u, v, OBC, Reg, dt, d
 
     ! generate new grid
     if (CS%do_conv_adj) call convective_adjustment(G, GV, h_loc, tv_local)
-    call regridding_main(CS%remapCS, CS%regridCS, G, GV, h_loc, tv_local, h, dzInterface, conv_adjust=.false., dt=dt, u=u, v=v)
+    call regridding_main(CS%remapCS, CS%regridCS, G, GV, h_loc, tv_local, h, dzInterface, &
+         conv_adjust=.false., dt=dt, u=u, v=v)
     dzIntTotal(:,:,:) = dzIntTotal(:,:,:) + dzInterface(:,:,:)
 
     ! remap from original grid onto new grid

@@ -90,6 +90,7 @@ type, public :: regridding_CS ; private
   !> Reference pressure for potential density calculations [R L2 T-2 ~> Pa]
   real :: ref_pressure = 2.e7
 
+  !> The control structure for coordinate filtering
   type(filter_CS) :: filter_CS
 
   !> Fraction (between 0 and 1) of compressibility to add to potential density
@@ -1074,7 +1075,7 @@ subroutine build_zstar_grid( CS, G, GV, h, dzInterface, frac_shelf_h)
       ! Determine water column thickness
       totalThickness = 0.0
       do k = 1,nz
-        totalThickness = totalThickness + h(i,j,k)
+       totalThickness = totalThickness + h(i,j,k)
       enddo
 
       zOld(nz+1) = - nominalDepth
@@ -1466,6 +1467,7 @@ subroutine build_grid_HyCOM1( G, GV, US, h, tv, h_new, dzInterface, CS, frac_she
 
 end subroutine build_grid_HyCOM1
 
+!> Build a grid using the AG adaptive-density/smoothing algorithm
 subroutine build_grid_adaptive(G, GV, US, h, u, v, tv, CS, dzInterface, remapCS, dt)
   type(ocean_grid_type),                       intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
@@ -1473,13 +1475,16 @@ subroutine build_grid_adaptive(G, GV, US, h, u, v, tv, CS, dzInterface, remapCS,
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)),   intent(in)    :: h    !< Layer thicknesses [H ~> m or kg m-2]
   type(thermo_var_ptrs),                       intent(in)    :: tv   !< A structure pointing to various
                                                                      !! thermodynamic variables
-  type(regridding_CS),                         intent(in)    :: CS   !< Regridding control structure
+  type(regridding_CS),                         intent(in)    :: CS !< Regridding control structure
   real, dimension(SZI_(G),SZJ_(G),CS%nk+1),    intent(inout) :: dzInterface !< The change in interface depth
                                                                      !! [H ~> m or kg m-2]
-  type(remapping_CS),                          intent(in)    :: remapCS !< The remapping control structure
-  real, optional, intent(in) :: dt !< The intended timestep over which this regridding operation applies
-  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)),  optional, intent(in)    :: u !< If present, calculate convective adjustment
-  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)),  optional, intent(in)    :: v
+  type(remapping_CS),                          intent(in)    :: remapCS !< Unused
+  real,                              optional, intent(in)    :: dt !< The intended timestep over which this
+                                                                   !! regridding operation applies
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)),  optional, intent(in) :: u !< U velocity
+                                                                         !! if present, calculate convective adjustment
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)),  optional, intent(in) :: v !< V velocity
+                                                                         !! if present, calculate convective adjustment
 
   integer :: i, j
 
@@ -2137,8 +2142,9 @@ function getCoordinateInterfaces( CS, undo_scaling )
 
 end function getCoordinateInterfaces
 
+!> Query the regrdding scheme (coordinate mode)
 function getCoordinateMode( CS )
-  type(regridding_CS), intent(in) :: CS
+  type(regridding_CS), intent(in) :: CS !< Regridding control structure
   integer :: getCoordinateMode
 
   getCoordinateMode = CS%regridding_scheme
@@ -2250,7 +2256,8 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   logical, optional, intent(in) :: adapt_mean !< Use mean rather than "upstream" thickness
   logical, optional, intent(in) :: adapt_twin !< Calculate sign of density gradient above and below interfaces
   logical, optional, intent(in) :: adapt_physical_slope !< Use along-coordinate or physical-space slope?
-  logical, optional, intent(in) :: adapt_restore_mean !< Restore towards dynamically-calculated interface mean, or specified coordinate
+  logical, optional, intent(in) :: adapt_restore_mean !< Restore towards dynamically-calculated interface mean,
+                                                    !! or specified coordinate
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
   if (present(boundary_extrapolation)) call set_interp_extrap(CS%interp_CS, boundary_extrapolation)
@@ -2347,8 +2354,9 @@ function get_rho_CS(CS)
   get_rho_CS = CS%rho_CS
 end function get_rho_CS
 
+!> This returns a pointer to the adapt_CS stored in the regridding control structure.
 function get_adapt_CS(CS)
-  type(regridding_CS), intent(in) :: CS
+  type(regridding_CS), intent(in) :: CS !< Regridding control structure
   type(adapt_CS), pointer :: get_adapt_CS
 
   get_adapt_CS => CS%adapt_CS
