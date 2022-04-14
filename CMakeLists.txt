@@ -6,6 +6,13 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 find_package(fms COMPONENTS R8 REQUIRED)
 
+option(SYMMETRIC "Use symmetric memory" ON)
+if(SYMMETRIC)
+	set(MOM_memory "dynamic_symmetric")
+else()
+	set(MOM_memory "dynamic_nonsymmetric")
+endif()
+
 set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} -fdefault-real-8")
 
 set(MOM_src
@@ -29,11 +36,9 @@ set(MOM_src
 		config_src/external/GFDL_ocean_BGC/generic_tracer_utils.F90 config_src/external/GFDL_ocean_BGC/generic_tracer.F90 config_src/external/GFDL_ocean_BGC/FMS_coupler_util.F90
 		config_src/drivers/solo_driver/user_surface_forcing.F90 config_src/drivers/solo_driver/MESO_surface_forcing.F90 config_src/drivers/solo_driver/atmos_ocean_fluxes.F90 config_src/drivers/solo_driver/MOM_surface_forcing.F90 config_src/drivers/solo_driver/MOM_driver.F90
 		config_src/infra/FMS1/MOM_interp_infra.F90 config_src/infra/FMS1/MOM_coms_infra.F90 config_src/infra/FMS1/MOM_couplertype_infra.F90 config_src/infra/FMS1/MOM_diag_manager_infra.F90 config_src/infra/FMS1/MOM_cpu_clock_infra.F90 config_src/infra/FMS1/MOM_time_manager.F90 config_src/infra/FMS1/MOM_error_infra.F90 config_src/infra/FMS1/MOM_data_override_infra.F90 config_src/infra/FMS1/MOM_domain_infra.F90 config_src/infra/FMS1/MOM_ensemble_manager_infra.F90 config_src/infra/FMS1/MOM_constants.F90 config_src/infra/FMS1/MOM_io_infra.F90)
-#list(TRANSFORM MOM_src PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
 
 set(MOM_inc
-	config_src/memory/dynamic_symmetric src/framework)
-#list(TRANSFORM MOM_inc PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
+	config_src/memory/${MOM_memory} src/framework)
 
 add_executable(MOM6 ${MOM_src})
 
