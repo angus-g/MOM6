@@ -874,7 +874,7 @@ subroutine regridding_main( remapCS, CS, G, GV, h, tv, h_new, dzInterface, conv_
       call build_grid_SLight( G, GV, G%US, h, tv, dzInterface, CS )
       call calc_h_new_by_dz(CS, G, GV, h, dzInterface, h_new)
     case ( REGRIDDING_ADAPTIVE )
-      call build_grid_adaptive(G, GV, G%US, h, u, v, tv, CS, dzInterface, remapCS, dt)
+      call build_grid_adaptive(G, GV, G%US, h, u, v, tv, CS, dzInterface, dt)
       call calc_h_new_by_dz(CS, G, GV, h, dzInterface, h_new)
 
     case default
@@ -1468,7 +1468,7 @@ subroutine build_grid_HyCOM1( G, GV, US, h, tv, h_new, dzInterface, CS, frac_she
 end subroutine build_grid_HyCOM1
 
 !> Build a grid using the AG adaptive-density/smoothing algorithm
-subroutine build_grid_adaptive(G, GV, US, h, u, v, tv, CS, dzInterface, remapCS, dt)
+subroutine build_grid_adaptive(G, GV, US, h, u, v, tv, CS, dzInterface, dt)
   type(ocean_grid_type),                       intent(in)    :: G    !< The ocean's grid structure
   type(verticalGrid_type),                     intent(in)    :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),                       intent(in)    :: US   !< A dimensional unit scaling type
@@ -1478,7 +1478,6 @@ subroutine build_grid_adaptive(G, GV, US, h, u, v, tv, CS, dzInterface, remapCS,
   type(regridding_CS),                         intent(in)    :: CS !< Regridding control structure
   real, dimension(SZI_(G),SZJ_(G),CS%nk+1),    intent(inout) :: dzInterface !< The change in interface depth
                                                                      !! [H ~> m or kg m-2]
-  type(remapping_CS),                          intent(in)    :: remapCS !< Unused
   real,                              optional, intent(in)    :: dt !< The intended timestep over which this
                                                                    !! regridding operation applies
   real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)),  optional, intent(in) :: u !< U velocity
