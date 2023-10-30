@@ -103,6 +103,8 @@ implicit none ; private
 
 public MOM_initialize_state
 
+public :: calc_sfc_displacement, depress_surface
+
 ! A note on unit descriptions in comments: MOM6 uses units that can be rescaled for dimensional
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
 ! their mks counterparts with notation like "a velocity [Z T-1 ~> m s-1]".  If the units
