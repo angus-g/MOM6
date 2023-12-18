@@ -18,6 +18,7 @@ use MOM_forcing_type, only : mech_forcing
 use MOM_grid, only : ocean_grid_type
 use MOM_hor_index, only : hor_index_type
 use MOM_io, only : vardesc, var_desc, MOM_read_data, slasher
+use MOM_io, only : NORTH_FACE, EAST_FACE
 use MOM_open_boundary, only : ocean_OBC_type, OBC_NONE, open_boundary_query
 use MOM_open_boundary, only : OBC_DIRECTION_E, OBC_DIRECTION_W
 use MOM_open_boundary, only : OBC_DIRECTION_N, OBC_DIRECTION_S, OBC_segment_type
@@ -4355,8 +4356,12 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
   character(len=200) :: inputdir       ! The directory in which to find input files.
   character(len=200) :: wave_drag_file ! The file from which to read the wave
                                        ! drag piston velocity.
-  character(len=80)  :: wave_drag_var  ! The wave drag piston velocity variable
-                                       ! name in wave_drag_file.
+  character(len=80)  :: wave_drag_h_var  ! The h-point wave drag piston velocity variable
+                                         ! name in wave_drag_file.
+  character(len=80)  :: wave_drag_u_var  ! The u-point wave drag piston velocity variable
+                                         ! name in wave_drag_file.
+  character(len=80)  :: wave_drag_v_var  ! The v-point wave drag piston velocity variable
+                                         ! name in wave_drag_file.
   real :: mean_SL     ! The mean sea level that is used along with the bathymetry to estimate the
                       ! geometry when LINEARIZED_BT_CORIOLIS is true or BT_NONLIN_STRESS is false [Z ~> m].
   real :: Z_to_H      ! A local unit conversion factor [H Z-1 ~> nondim or kg m-3]
@@ -4373,6 +4378,7 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
   logical :: use_BT_cont_type
   logical :: use_tides
+  logical :: do_wave_drag_h, do_wave_drag_u, do_wave_drag_v
   character(len=48) :: thickness_units, flux_units
   character*(40) :: hvel_str
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
@@ -4581,6 +4587,7 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                  "with the barotropic time-step instead of implicit with "//&
                  "the baroclinic time-step and dividing by the number of "//&
                  "barotropic steps.", default=.false.)
+
   call get_param(param_file, mdl, "BT_LINEAR_WAVE_DRAG", CS%linear_wave_drag, &
                  "If true, apply a linear drag to the barotropic velocities, "//&
                  "using rates set by lin_drag_u & _v divided by the depth of "//&
@@ -4589,10 +4596,31 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
   call get_param(param_file, mdl, "BT_WAVE_DRAG_FILE", wave_drag_file, &
                  "The name of the file with the barotropic linear wave drag "//&
                  "piston velocities.", default="", do_not_log=.not.CS%linear_wave_drag)
-  call get_param(param_file, mdl, "BT_WAVE_DRAG_VAR", wave_drag_var, &
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_H", do_wave_drag_h, &
+                 "Whether to use a wave drag component at H points, "// &
+                 "that applies to both U and V components.", &
+                 default=CS%linear_wave_drag, do_not_log=.not.CS%linear_wave_drag)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_H_VAR", wave_drag_h_var, &
                  "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
-                 "barotropic linear wave drag piston velocities at h points.", &
-                 default="rH", do_not_log=.not.CS%linear_wave_drag)
+                 "barotropic linear wave drag piston velocities at h points, "// &
+                 "to be interpolated onto both lin_drag_u & _v.", &
+                 default="rH", do_not_log=.not.do_wave_drag_h)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_U", do_wave_drag_u, &
+                 "Whether to use a wave drag component at U points, "// &
+                 "that applies to only the U component.", &
+                 default=.false., do_not_log=.not.CS%linear_wave_drag)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_U_VAR", wave_drag_u_var, &
+                 "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
+                 "barotropic linear wave drag piston velocities at u points.", &
+                 default="rU", do_not_log=.not.do_wave_drag_u)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_U", do_wave_drag_v, &
+                 "Whether to use a wave drag component at V points, "// &
+                 "that applies to only the V component.", &
+                 default=.false., do_not_log=.not.CS%linear_wave_drag)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_V_VAR", wave_drag_v_var, &
+                 "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
+                 "barotropic linear wave drag piston velocities at v points.", &
+                 default="rV", do_not_log=.not.do_wave_drag_v)
   call get_param(param_file, mdl, "BT_WAVE_DRAG_SCALE", wave_drag_scale, &
                  "A scaling factor for the barotropic linear wave drag "//&
                  "piston velocities.", default=1.0, units="nondim", &
@@ -4812,17 +4840,36 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
       wave_drag_file = trim(slasher(inputdir))//trim(wave_drag_file)
       call log_param(param_file, mdl, "INPUTDIR/BT_WAVE_DRAG_FILE", wave_drag_file)
 
-      allocate(lin_drag_h(isd:ied,jsd:jed), source=0.0)
+      if (do_wave_drag_u) then
+         call MOM_read_data(wave_drag_file, wave_drag_u_var, CS%lin_drag_u, G%Domain, &
+              position=EAST_FACE, scale=GV%m_to_H*US%T_to_s)
 
-      call MOM_read_data(wave_drag_file, wave_drag_var, lin_drag_h, G%Domain, scale=GV%m_to_H*US%T_to_s)
-      call pass_var(lin_drag_h, G%Domain)
-      do j=js,je ; do I=is-1,ie
-        CS%lin_drag_u(I,j) = wave_drag_scale * 0.5 * (lin_drag_h(i,j) + lin_drag_h(i+1,j))
-      enddo ; enddo
-      do J=js-1,je ; do i=is,ie
-        CS%lin_drag_v(i,J) = wave_drag_scale * 0.5 * (lin_drag_h(i,j) + lin_drag_h(i,j+1))
-      enddo ; enddo
-      deallocate(lin_drag_h)
+         do j=js,je ; do I=is-1,ie
+            CS%lin_drag_u(I,j) = wave_drag_scale * CS%lin_drag_u(I,j)
+         enddo; enddo
+      endif
+      if (do_wave_drag_v) then
+         call MOM_read_data(wave_drag_file, wave_drag_v_var, CS%lin_drag_v, G%Domain, &
+              position=NORTH_FACE, scale=GV%m_to_H*US%T_to_s)
+
+         do J=js-1,je ; do i=is,ie
+            CS%lin_drag_v(i,J) = wave_drag_scale * CS%lin_drag_v(i,J)
+         enddo; enddo
+      endif
+
+      if (do_wave_drag_h) then
+        allocate(lin_drag_h(isd:ied,jsd:jed), source=0.0)
+
+        call MOM_read_data(wave_drag_file, wave_drag_h_var, lin_drag_h, G%Domain, scale=GV%m_to_H*US%T_to_s)
+        call pass_var(lin_drag_h, G%Domain)
+        do j=js,je ; do I=is-1,ie
+          CS%lin_drag_u(I,j) = CS%lin_drag_u(I,j) + wave_drag_scale * 0.5 * (lin_drag_h(i,j) + lin_drag_h(i+1,j))
+        enddo; enddo
+        do J=js-1,je ; do i=is,ie
+          CS%lin_drag_v(i,J) = CS%lin_drag_v(i,J) + wave_drag_scale * 0.5 * (lin_drag_h(i,j) + lin_drag_h(i,j+1))
+        enddo; enddo
+        deallocate(lin_drag_h)
+      endif
     endif
   endif
 
