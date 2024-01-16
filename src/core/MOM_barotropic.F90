@@ -4613,7 +4613,7 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                  "The name of the variable in BT_WAVE_DRAG_FILE with the "//&
                  "barotropic linear wave drag piston velocities at u points.", &
                  default="rU", do_not_log=.not.do_wave_drag_u)
-  call get_param(param_file, mdl, "BT_WAVE_DRAG_U", do_wave_drag_v, &
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_V", do_wave_drag_v, &
                  "Whether to use a wave drag component at V points, "// &
                  "that applies to only the V component.", &
                  default=.false., do_not_log=.not.CS%linear_wave_drag)
