@@ -75,8 +75,7 @@ type, public :: adapt_CS ; private
 
   !> If positive, a manual coefficient for the density adaptivity term.
   !! If negative, either density or pressure adaptivity are chosen,
-  !! depending on the local coordinate slope, with a minimum of min_smooth
-  !! going toward the pressure term.
+  !! depending on the local coordinate slope, going toward the pressure term.
   real :: alpha_rho
 
   !> The complement of alpha_rho: a positive value is a manually-specified
@@ -84,9 +83,9 @@ type, public :: adapt_CS ; private
   !! value of at least min_smooth.
   real :: alpha_p
 
-  !> Minimum weighting of the pressure adaptivity (smoothing) term, used
-  !! when alpha_rho and alpha_p are negative.
-  real :: min_smooth
+  !> Scaling coefficient of the biharmonic smoothing term, used
+  !! as a baseline to keep the density adaptivity in check.
+  real :: biharmonic_smoothing
 
   !> The timescale over which to apply the diffusive adaptivity terms. [T ~> s]
   real :: adaptivity_timescale
@@ -178,7 +177,7 @@ end subroutine end_coord_adapt
 
 !> This subtroutine can be used to set the parameters for coord_adapt module
 subroutine set_adapt_params(CS, alpha_rho, alpha_p, adaptivity_timescale, use_mean_h, &
-     use_twin_gradient, slope_cutoff, min_smooth, use_physical_slope, restoring_timescale, do_restore_mean, &
+     use_twin_gradient, slope_cutoff, biharmonic_smoothing, use_physical_slope, restoring_timescale, do_restore_mean, &
      adjustment_scale)
 
   type(adapt_CS),    pointer    :: CS  !< The control structure for this module
@@ -188,7 +187,7 @@ subroutine set_adapt_params(CS, alpha_rho, alpha_p, adaptivity_timescale, use_me
   logical, optional, intent(in) :: use_mean_h !< Use uniform or "upstream" mean thickness?
   logical, optional, intent(in) :: use_twin_gradient !< Calculate interface density gradient layers above and below
   real,    optional, intent(in) :: slope_cutoff !< Stratified/unstratified cutoff
-  real,    optional, intent(in) :: min_smooth !< Minimum pressure adaptivity contribution
+  real,    optional, intent(in) :: biharmonic_smoothing !< Biharmonic smoothing coefficient
   logical, optional, intent(in) :: use_physical_slope !< Use physical or along-interface slope
   real,    optional, intent(in) :: restoring_timescale !< Timescale for restoring term
   logical, optional, intent(in) :: do_restore_mean !< Restore to the mean height?
@@ -202,7 +201,7 @@ subroutine set_adapt_params(CS, alpha_rho, alpha_p, adaptivity_timescale, use_me
   if (present(use_mean_h))           CS%use_mean_h = use_mean_h
   if (present(use_twin_gradient))    CS%use_twin_gradient = use_twin_gradient
   if (present(slope_cutoff))         CS%slope_cutoff = slope_cutoff
-  if (present(min_smooth))           CS%min_smooth = min_smooth
+  if (present(biharmonic_smoothing)) CS%biharmonic_smoothing = biharmonic_smoothing
   if (present(use_physical_slope))   CS%use_physical_slope = use_physical_slope
   if (present(restoring_timescale))  CS%restoring_timescale = restoring_timescale
   if (present(do_restore_mean))      CS%do_restore_mean = do_restore_mean
@@ -442,16 +441,19 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
     ! end of the block anyway, but annoying to have to use heap space)
     real, allocatable, dimension(:,:) :: t_int, s_int
     real, allocatable, dimension(:,:) :: dz_s_i, dz_s_j, dz_p_i, dz_p_j, dz_i, dz_j
+    real, allocatable, dimension(:,:) :: dz_b, dz_b_i, dz_b_j
 
     allocate(t_int(SZI_(G),SZJ_(G)), s_int(SZI_(G),SZJ_(G)))
     allocate(dz_s_i(SZIB_(G),SZJ_(G)), dz_s_j(SZI_(G),SZJB_(G)))
     allocate(dz_p_i(SZIB_(G),SZJ_(G)), dz_p_j(SZI_(G),SZJB_(G)))
+    allocate(dz_b(SZI_(G),SZJ_(G)), dz_b_i(SZIB_(G),SZJ_(G)), dz_b_j(SZI_(G),SZJB_(G)))
     allocate(dz_i(SZIB_(G),SZJ_(G)), dz_j(SZI_(G),SZJB_(G)))
 
   !$omp do
   do K = 2,nz
     dz_s_i(:,:) = 0. ; dz_s_j(:,:) = 0.
     dz_p_i(:,:) = 0. ; dz_p_j(:,:) = 0.
+    dz_b_i(:,:) = 0. ; dz_b_j(:,:) = 0.
     dz_i(:,:) = 0. ; dz_j(:,:) = 0.
 
     do j = G%jsc-2,G%jec+2
@@ -561,6 +563,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
 
         ! we also calculate the difference in pressure (interface position)
         dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * ts_ratio * L_to_H
+        dz_b_i(I,j) = dz_p_i(I,j) ! save the unlimited value for calculating biharmonic [H^2]
         dz_p_unlim = dz_p_i(I,j)
         ! dz_p_i positive => left is further down than right
         ! => move left up, right down
@@ -619,9 +622,9 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         ! calculate weighting between density and pressure terms
         ! by a cutoff value on the local normalised stratification
         if (slope <= CS%slope_cutoff**2 .and. k > 2) then
-          weight = 1.0 - CS%min_smooth ; weight2 = 0.
+          weight = 1.0 ; weight2 = 0.
         else
-          weight = 0.0 ; weight2 = 1.0 - CS%min_smooth
+          weight = 0.0 ; weight2 = 1.0
         endif
 
         ! override weights if required
@@ -640,21 +643,6 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
 
         dz_s_i(I,j) = dz_s_i(I,j) * weight
         dz_p_i(I,j) = dz_p_i(I,j) * weight2
-
-        ! combining density and pressure fluxes
-        ! and re-apply limiter -- with a full cut-off this isn't necessary
-        dz_i(I,j) = dz_s_i(I,j) + dz_p_i(I,j)
-        if (dz_i(I,j) < 0.) then
-          ! hdi_sig positive -- left down, right up
-          dz_i(I,j) = max(dz_i(I,j), -0.125 * min( &
-               h(i,j,k) * G%areaT(i,j), &
-               h(i+1,j,k-1) * G%areaT(i+1,j)) * G%IdyCu(I,j) * L_to_H)
-        else
-          ! hdi_sig negative -- left up, right down
-          dz_i(I,j) = min(dz_i(I,j), 0.125 * min( &
-               h(i,j,k-1) * G%areaT(i,j), &
-               h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j) * L_to_H)
-        end if
       end do
     end do
 
@@ -717,6 +705,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         end if
 
         dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio * L_to_H
+        dz_b_j(i,J) = dz_p_j(i,J)
         dz_p_unlim = dz_p_j(i,J)
 
         if (dz_p_j(i,J) < 0.) then
@@ -765,9 +754,9 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         if (CS%use_physical_slope) slope = phys_slope
 
         if (slope <= CS%slope_cutoff**2 .and. k > 2) then
-          weight = 1.0 - CS%min_smooth ; weight2 = 0.
+          weight = 1.0 ; weight2 = 0.
         else
-          weight = 0.0 ; weight2 = 1.0 - CS%min_smooth
+          weight = 0.0 ; weight2 = 1.0
         endif
 
         ! override weights if required
@@ -786,8 +775,46 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
 
         dz_s_j(i,J) = dz_s_j(i,J) * weight
         dz_p_j(i,J) = dz_p_j(i,J) * weight2
+      end do
+    end do
 
-        dz_j(i,J) = dz_s_j(i,J) + dz_p_j(i,J)
+    do j = G%jsc-1,G%jec+1
+      do i = G%isc-1,G%iec+1
+        ! 1/LH * (L*H^2) = H
+        dz_b(i,j) = G%IareaT(i,j) &
+             * ((G%dyCu(I,j) * dz_b_i(I,j) - G%dyCu(I-1,j) * dz_b_i(I-1,j)) &
+             +  (G%dxCv(i,J) * dz_b_j(i,J) - G%dxCv(i,J-1) * dz_b_j(i,J-1))) / L_to_H
+      end do
+    end do
+
+    do j = G%jsc-1,G%jec+1
+      do I = G%IscB-1,G%IecB+1
+        ! calculate biharmonic flux
+        dz_b_i(I,j) = (dz_b(i+1,j) - dz_b(i,j)) * G%dxCu(I,j) * L_to_H * CS%biharmonic_smoothing
+
+        ! combining density and pressure fluxes
+        ! and re-apply limiter -- with a full cut-off this isn't necessary
+        dz_i(I,j) = dz_s_i(I,j) + dz_p_i(I,j) + dz_b_i(I,j)
+        if (dz_i(I,j) < 0.) then
+          ! hdi_sig positive -- left down, right up
+          dz_i(I,j) = max(dz_i(I,j), -0.125 * min( &
+               h(i,j,k) * G%areaT(i,j), &
+               h(i+1,j,k-1) * G%areaT(i+1,j)) * G%IdyCu(I,j) * L_to_H)
+        else
+          ! hdi_sig negative -- left up, right down
+          dz_i(I,j) = min(dz_i(I,j), 0.125 * min( &
+               h(i,j,k-1) * G%areaT(i,j), &
+               h(i+1,j,k) * G%areaT(i+1,j)) * G%IdyCu(I,j) * L_to_H)
+        end if
+      end do
+    end do
+
+    do J = G%JscB-1,G%JecB+1
+      do i = G%isc-1,G%iec+1
+        ! calculate biharmonic flux
+        dz_b_j(i,J) = (dz_b(i,j+1) - dz_b(i,j)) * G%dyCv(i,J) * L_to_H * CS%biharmonic_smoothing
+
+        dz_j(i,J) = dz_s_j(i,J) + dz_p_j(i,J) + dz_b_j(i,J)
         if (dz_j(i,J) < 0.) then
           ! hdj_sig positive -- left down, right up
           dz_j(i,J) = max(dz_j(i,J), -0.125 * min( &
@@ -838,67 +865,6 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         end do
       end if
     end if
-
-    ! calculate the z-smoothing fluxes and apply in a second step
-    ! this lets us use a "barotropic" limiter, which should be much less
-    ! restrictive than the layer-based one
-    do j = G%jsc-1,G%jec+1
-      do I = G%IscB-1,G%IecB+1
-        if (G%mask2dCu(I,j) < 0.5) then
-          dz_p_i(I,j) = 0.
-          cycle
-        endif
-
-        dz_p_i(I,j) = (z_int(i+1,j,K) - z_int(i,j,K)) * G%dxCu(I,j) * ts_ratio * L_to_H
-        ! dz_p_i positive => left is further down than right
-        ! => move left up, right down
-
-        ! XXX this becomes a barotropic limiter
-        if (dz_p_i(I,j) < 0.) then
-          ! dz_p_i negative -- right up, left down
-          dz_p_i(I,j) = max(dz_p_i(I,j), -min( &
-               (z_int(i,j,K) - z_int(i,j,nz+1)) * G%areaT(i,j), &
-               (z_int(i+1,j,1) - z_int(i+1,j,K)) * G%areaT(i+1,j)) * G%IdyCu(I,j) * L_to_H)
-        else
-          ! dz_p_i positive -- left up, right down
-          dz_p_i(I,j) = min(dz_p_i(I,j), min( &
-               (z_int(i,j,1) - z_int(i,j,K)) * G%areaT(i,j), &
-               (z_int(i+1,j,K) - z_int(i+1,j,nz+1)) * G%areaT(i+1,j)) * G%IdyCu(I,j) * L_to_H)
-        end if
-        dz_p_i(I,j) = dz_p_i(I,j) * CS%min_smooth
-      end do
-    end do
-
-    do J = G%JscB-1,G%JecB+1
-      do i = G%isc-1,G%iec+1
-        if (G%mask2dCv(i,J) < 0.5) then
-          dz_p_j(i,J) = 0.
-          cycle
-        endif
-
-        dz_p_j(i,J) = (z_int(i,j+1,K) - z_int(i,j,K)) * G%dyCv(i,J) * ts_ratio * L_to_H
-
-        if (dz_p_j(i,J) < 0.) then
-          dz_p_j(i,J) = max(dz_p_j(i,J), -min( &
-               (z_int(i,j,K) - z_int(i,j,nz+1)) * G%areaT(i,j), &
-               (z_int(i,j+1,1) - z_int(i,j+1,K)) * G%areaT(i,j+1)) * G%IdxCv(i,J) * L_to_H)
-        else
-          dz_p_j(i,J) = min(dz_p_j(i,J), min( &
-               (z_int(i,j,1) - z_int(i,j,K)) * G%areaT(i,j), &
-               (z_int(i,j+1,K) - z_int(i,j+1,nz+1)) * G%areaT(i,j+1)) * G%IdxCv(i,J) * L_to_H)
-        end if
-        dz_p_j(i,J) = dz_p_j(i,J) * CS%min_smooth
-      end do
-    end do
-
-    ! calculate flux due to barotropically-limited smoothing term
-    do j = G%jsc-1,G%jec+1
-      do i = G%isc-1,G%iec+1
-        dz_p(i,j,K) = 0.5 * 0.25 * G%IareaT(i,j) / L_to_H &
-             * ((G%dyCu(I,j) * dz_p_i(I,j) - G%dyCu(I-1,j) * dz_p_i(I-1,j)) &
-              + (G%dxCv(i,J) * dz_p_j(i,J) - G%dxCv(i,J-1) * dz_p_j(i,J-1)))
-      end do
-    end do
   end do
   !$omp end do
   end block
