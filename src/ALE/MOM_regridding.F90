@@ -606,8 +606,8 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
          "Use mean rather than 'upstream' h in calculations", default=.false.)
     call get_param(param_file, mdl, "ADAPT_SLOPE_CUTOFF", adapt_cutoff, &
          "Slope cutoff between stratified and unstratified regions", default=1e-2)
-    call get_param(param_file, mdl, "ADAPT_SMOOTH_MIN", adapt_smooth, &
-         "Minimum weight toward smoothing term", default=0.)
+    call get_param(param_file, mdl, "ADAPT_BIHARMONIC_SMOOTHING", adapt_smooth, &
+         "Coefficient scaling the biharmonic smoothing term.", default=0.)
 
     call get_param(param_file, mdl, "ADAPT_ADJUSTMENT_SCALE", adapt_adjustment, &
          "Non-dimensional scale for adjusting interface positions when\n"//&
@@ -2250,7 +2250,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   real,    optional, intent(in) :: adapt_timescale !< Timescale over which to apply adaptivity terms
   real,    optional, intent(in) :: adapt_restoring_timescale !< Timescale for coordinate restoration
   real,    optional, intent(in) :: adapt_cutoff !< Interface slope cutoff defining stratified/unstratified regions
-  real,    optional, intent(in) :: adapt_smooth !< Minimum weight for smoothing term
+  real,    optional, intent(in) :: adapt_smooth !< Coefficient for biharmonic smoothing term
   real,    optional, intent(in) :: adapt_adjustment_scale !< Non-dimensional scale for diagonal convective instability
   logical, optional, intent(in) :: adapt_mean !< Use mean rather than "upstream" thickness
   logical, optional, intent(in) :: adapt_twin !< Calculate sign of density gradient above and below interfaces
@@ -2314,7 +2314,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, alpha_rho=adapt_alpha_rho, alpha_p=adapt_alpha_p, &
          adaptivity_timescale=adapt_timescale, use_mean_h=adapt_mean, use_twin_gradient=adapt_twin, &
-         slope_cutoff=adapt_cutoff, min_smooth=adapt_smooth, use_physical_slope=adapt_physical_slope, &
+         slope_cutoff=adapt_cutoff, biharmonic_smoothing=adapt_smooth, use_physical_slope=adapt_physical_slope, &
          restoring_timescale=adapt_restoring_timescale, do_restore_mean=adapt_restore_mean, &
          adjustment_scale=adapt_adjustment_scale)
   end select
