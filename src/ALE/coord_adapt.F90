@@ -864,17 +864,21 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
           end do
         end do
       end if
+      ! DIAG: disp_unlimited
+      if (allocated(CS%diag_CS%disp_unlimited)) then
+        do j = G%jsc-1,G%jec+1
+          do i = G%isc-1,G%iec+1
+            CS%diag_CS%disp_unlimited(i,j,K) = 0.25 * G%IareaT(i,j) / L_to_H &
+                 * ((G%dyCu(I,j) * dz_b_i(I,j) - G%dyCu(I-1,j) * dz_b_i(I-1,j)) &
+                 +  (G%dxCv(i,J) * dz_b_j(i,J) - G%dxCv(i,J-1) * dz_b_j(i,J-1)))
+          end do
+        end do
+      end if
     end if
   end do
   !$omp end do
   end block
   !$omp end parallel
-
-  if (do_diag) then
-    ! DIAG: disp_unlimited
-    if (allocated(CS%diag_CS%disp_unlimited)) &
-         CS%diag_CS%disp_unlimited(:,:,:) = dz_p(:,:,:)
-  end if
 
   ts_ratio = dt / CS%restoring_timescale
   !$omp parallel do private(z_upd, z_col, i, j, k)
