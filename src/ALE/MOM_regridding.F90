@@ -201,6 +201,8 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
   real :: maximum_depth ! The maximum depth of the ocean [m] (not in Z).
   real :: dz_fixed_sfc, Rho_avg_depth, nlay_sfc_int
   real :: adapt_alpha_rho, adapt_alpha_p, adapt_timescale, adapt_cutoff, adapt_smooth, adapt_adjustment
+  logical :: adapt_tanh_transition, adapt_log_slope
+  real :: adapt_transition_width
   integer :: nz_fixed_sfc, k, nzf(4)
   real, dimension(:), allocatable :: dz     ! Resolution (thickness) in units of coordinate, which may be [m]
                                             ! or [Z ~> m] or [H ~> m or kg m-2] or [R ~> kg m-3] or other units.
@@ -606,6 +608,12 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
          "Use mean rather than 'upstream' h in calculations", default=.false.)
     call get_param(param_file, mdl, "ADAPT_SLOPE_CUTOFF", adapt_cutoff, &
          "Slope cutoff between stratified and unstratified regions", default=1e-2)
+    call get_param(param_file, mdl, "ADAPT_TANH_TRANSITION", adapt_tanh_transition, &
+         "Whether to use a tanh or hard transition between regimes", default=.true.)
+    call get_param(param_file, mdl, "ADAPT_TRANSITION_WIDTH", adapt_transition_width, &
+         "The scaling factor for the width of the tanh transition region.", default=1.0)
+    call get_param(param_file, mdl, "ADAPT_LOG_SLOPE", adapt_log_slope, &
+         "Whether to first take the logarithm of the slope before comparing to the cutoff", default=.false.)
     call get_param(param_file, mdl, "ADAPT_SMOOTH_MIN", adapt_smooth, &
          "Minimum weight toward smoothing term", default=0.)
 
@@ -617,7 +625,9 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
 
     call set_regrid_params(CS, adapt_alpha_rho=adapt_alpha_rho, adapt_alpha_p=adapt_alpha_p, &
          adapt_timescale=adapt_timescale, adapt_mean=tmpLogical, &
-         adapt_cutoff=adapt_cutoff, adapt_smooth=adapt_smooth, adapt_adjustment_scale=adapt_adjustment)
+         adapt_cutoff=adapt_cutoff, adapt_smooth=adapt_smooth, adapt_adjustment_scale=adapt_adjustment, &
+         adapt_tanh_transition=adapt_tanh_transition, adapt_transition_width=adapt_transition_width, &
+         adapt_log_slope=adapt_log_slope)
 
     call get_param(param_file, mdl, "ADAPT_RESTORING_TIMESCALE", adapt_timescale, &
          "Timescale for adaptivity restoring (default 10 days)", &
@@ -2216,7 +2226,8 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
              halocline_strat_tol, integrate_downward_for_e, remap_answers_2018, &
              adapt_alpha_rho, adapt_alpha_p, adapt_timescale, &
              adapt_mean, adapt_twin, adapt_cutoff, adapt_smooth, adapt_physical_slope, &
-             adapt_restoring_timescale, adapt_restore_mean, adapt_adjustment_scale)
+             adapt_restoring_timescale, adapt_restore_mean, adapt_adjustment_scale, &
+             adapt_tanh_transition, adapt_transition_width, adapt_log_slope)
   type(regridding_CS), intent(inout) :: CS !< Regridding control structure
   logical, optional, intent(in) :: boundary_extrapolation !< Extrapolate in boundary cells
   real,    optional, intent(in) :: min_thickness    !< Minimum thickness allowed when building the
@@ -2256,7 +2267,10 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   logical, optional, intent(in) :: adapt_twin !< Calculate sign of density gradient above and below interfaces
   logical, optional, intent(in) :: adapt_physical_slope !< Use along-coordinate or physical-space slope?
   logical, optional, intent(in) :: adapt_restore_mean !< Restore towards dynamically-calculated interface mean,
-                                                    !! or specified coordinate
+                                                      !! or specified coordinate
+  logical, optional, intent(in) :: adapt_tanh_transition !< Use tanh transition between regimes
+  real,    optional, intent(in) :: adapt_transition_width !< Width of tanh profile
+  logical, optional, intent(in) :: adapt_log_slope !< Whether to first take logarithm of slope for cutoff
 
   if (present(interp_scheme)) call set_interp_scheme(CS%interp_CS, interp_scheme)
   if (present(boundary_extrapolation)) call set_interp_extrap(CS%interp_CS, boundary_extrapolation)
@@ -2314,7 +2328,9 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
     if (associated(CS%adapt_CS)) &
          call set_adapt_params(CS%adapt_CS, alpha_rho=adapt_alpha_rho, alpha_p=adapt_alpha_p, &
          adaptivity_timescale=adapt_timescale, use_mean_h=adapt_mean, use_twin_gradient=adapt_twin, &
-         slope_cutoff=adapt_cutoff, min_smooth=adapt_smooth, use_physical_slope=adapt_physical_slope, &
+         slope_cutoff=adapt_cutoff, tanh_transition=adapt_tanh_transition, &
+         transition_width=adapt_transition_width, log_slope=adapt_log_slope, &
+         min_smooth=adapt_smooth, use_physical_slope=adapt_physical_slope, &
          restoring_timescale=adapt_restoring_timescale, do_restore_mean=adapt_restore_mean, &
          adjustment_scale=adapt_adjustment_scale)
   end select

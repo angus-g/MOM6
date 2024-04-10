@@ -98,6 +98,16 @@ type, public :: adapt_CS ; private
   !> Interface slope cutoff for defining stratified/unstratified regions.
   real :: slope_cutoff
 
+  !> Whether to use a hard or tanh transition between regimes
+  logical :: tanh_transition
+
+  !> Scaling factor for the tanh transition region, to adjust its width
+  real :: transition_width
+
+  !> Whether to use the raw slope value, or take its logarithm (only
+  !! applies when ! tanh_transition is also true.
+  logical :: log_slope
+
   !> If true, use the uniform mean of thicknesses where required.
   !! Otherwise, use the "upstream" thickness in the direction of
   !! interface movement due to adaptivity.
@@ -178,7 +188,8 @@ end subroutine end_coord_adapt
 
 !> This subtroutine can be used to set the parameters for coord_adapt module
 subroutine set_adapt_params(CS, alpha_rho, alpha_p, adaptivity_timescale, use_mean_h, &
-     use_twin_gradient, slope_cutoff, min_smooth, use_physical_slope, restoring_timescale, do_restore_mean, &
+     use_twin_gradient, slope_cutoff, tanh_transition, transition_width, log_slope, min_smooth, &
+     use_physical_slope, restoring_timescale, do_restore_mean, &
      adjustment_scale)
 
   type(adapt_CS),    pointer    :: CS  !< The control structure for this module
@@ -188,6 +199,9 @@ subroutine set_adapt_params(CS, alpha_rho, alpha_p, adaptivity_timescale, use_me
   logical, optional, intent(in) :: use_mean_h !< Use uniform or "upstream" mean thickness?
   logical, optional, intent(in) :: use_twin_gradient !< Calculate interface density gradient layers above and below
   real,    optional, intent(in) :: slope_cutoff !< Stratified/unstratified cutoff
+  logical, optional, intent(in) :: tanh_transition !< Use tanh transition between regimes
+  real,    optional, intent(in) :: transition_width !< Scale factor for tanh transition region
+  logical, optional, intent(in) :: log_slope !< Take log of slope before tanh
   real,    optional, intent(in) :: min_smooth !< Minimum pressure adaptivity contribution
   logical, optional, intent(in) :: use_physical_slope !< Use physical or along-interface slope
   real,    optional, intent(in) :: restoring_timescale !< Timescale for restoring term
@@ -202,6 +216,9 @@ subroutine set_adapt_params(CS, alpha_rho, alpha_p, adaptivity_timescale, use_me
   if (present(use_mean_h))           CS%use_mean_h = use_mean_h
   if (present(use_twin_gradient))    CS%use_twin_gradient = use_twin_gradient
   if (present(slope_cutoff))         CS%slope_cutoff = slope_cutoff
+  if (present(tanh_transition))      CS%tanh_transition = tanh_transition
+  if (present(transition_width))     CS%transition_width = transition_width
+  if (present(log_slope))            CS%log_slope = log_slope
   if (present(min_smooth))           CS%min_smooth = min_smooth
   if (present(use_physical_slope))   CS%use_physical_slope = use_physical_slope
   if (present(restoring_timescale))  CS%restoring_timescale = restoring_timescale
@@ -618,10 +635,16 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
 
         ! calculate weighting between density and pressure terms
         ! by a cutoff value on the local normalised stratification
-        if (slope <= CS%slope_cutoff**2 .and. k > 2) then
-          weight = 1.0 - CS%min_smooth ; weight2 = 0.
+        if (CS%tanh_transition) then
+          if (CS%log_slope) slope = log(slope)
+          weight = (tanh((CS%slope_cutoff**2 - slope) / CS%transition_width) + 1.0) / 2.0
+          weight2 = 1.0 - weight
         else
-          weight = 0.0 ; weight2 = 1.0 - CS%min_smooth
+          if (slope <= CS%slope_cutoff**2 .and. k > 2) then
+            weight = 1.0 - CS%min_smooth ; weight2 = 0.
+          else
+            weight = 0.0 ; weight2 = 1.0 - CS%min_smooth
+          endif
         endif
 
         ! override weights if required
@@ -764,11 +787,17 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
 
         if (CS%use_physical_slope) slope = phys_slope
 
-        if (slope <= CS%slope_cutoff**2 .and. k > 2) then
-          weight = 1.0 - CS%min_smooth ; weight2 = 0.
+        if (CS%tanh_transition) then
+          if (CS%log_slope) slope = log(slope)
+          weight = (tanh((CS%slope_cutoff**2 - slope) / CS%transition_width) + 1.0) / 2.0
+          weight2 = 1.0 - weight
         else
-          weight = 0.0 ; weight2 = 1.0 - CS%min_smooth
-        endif
+          if (slope <= CS%slope_cutoff**2 .and. k > 2) then
+            weight = 1.0 - CS%min_smooth ; weight2 = 0.
+          else
+            weight = 0.0 ; weight2 = 1.0 - CS%min_smooth
+          endif
+        end if
 
         ! override weights if required
         if (CS%alpha_rho >= 0.) then
