@@ -298,7 +298,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
                                                                          !! if present, calculate convective adjustment
 
   ! local variables
-  integer :: i, j, k, k2, kt, nz, ii ! indices and dimension lengths
+  integer :: i, j, k, k2, kt, nz, n ! indices and dimension lengths
   integer :: np
 
   ! interface heights
@@ -435,7 +435,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
   !$omp          shared(tv, GV, G, CS, US, z_int, h, alpha_int, beta_int) &
   !$omp          shared(hdi_sig, hdj_sig, hdi_sig_phys, hdj_sig_phys) &
   !$omp          shared(L_to_H, ts_ratio, dz_a, dz_p, do_diag, eps, nz) &
-  !$omp          private(i, j, k, ii, dk_sig_int, alpha, beta) &
+  !$omp          private(i, j, k, n, np, dk_sig_int, alpha, beta) &
   !$omp          private(hdi_sig_u, hdj_sig_u, dk_sig_u, hdi_sig_v, hdj_sig_v, dk_sig_v, i_denom, j_denom, dz_p_unlim, slope, phys_slope, weight, weight2)
   block
     ! for some reason we get a segfault if these are brought in as private to the
@@ -443,7 +443,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
     ! end of the block anyway, but annoying to have to use heap space)
     real, allocatable, dimension(:,:) :: t_int, s_int
     real, allocatable, dimension(:,:) :: dz_s_i, dz_s_j, dz_p_i, dz_p_j, dz_i, dz_j
-    real, allocatable, dimension(:,:) :: weight_adapt_i, weight_smooth_j, weight_smooth_i, weight_smooth_j
+    real, allocatable, dimension(:,:) :: weight_adapt_i, weight_adapt_j, weight_smooth_i, weight_smooth_j
 
     allocate(t_int(SZI_(G),SZJ_(G)), s_int(SZI_(G),SZJ_(G)))
     allocate(dz_s_i(SZIB_(G),SZJ_(G)), dz_s_j(SZI_(G),SZJB_(G)))
@@ -520,7 +520,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         dk_sig_u = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i+1,j)**2)
 
         i_denom = hdi_sig_u + hdj_sig_u + dk_sig_u
-        if (abs(i_denom) < eps .or. dk_sig_int(i,j) > 0.0 .or. dk_sig_int(i+1,j) > 0.0) then
+        if (abs(i_denom) < eps .or. dk_sig_int(i,j) < 0.0 .or. dk_sig_int(i+1,j) < 0.0) then
           ! if gradients in all directions are exactly zero, we don't want any flux
           dz_s_i(I,j) = 0.
         else
@@ -591,7 +591,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         end if
 
         ! calculate and diagnose along-coordinate slope
-        if (abs(i_denom) < eps .or. dk_sig_int(i,j) > 0.0 .or. dk_sig_int(i+1,j) > 0.0) then
+        if (abs(i_denom) < eps .or. dk_sig_int(i,j) < 0.0 .or. dk_sig_int(i+1,j) < 0.0) then
           slope = 1.0
         else
           slope = (hdi_sig_u + hdj_sig_u) / i_denom
@@ -603,7 +603,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
              (hdj_sig_phys(i+1,J,K)**2 + hdj_sig_phys(i,J-1,K)**2))
         i_denom = hdi_sig_u + hdj_sig_u + dk_sig_u
 
-        if (abs(i_denom) < eps .or. dk_sig_int(i,j) > 0.0 .or. dk_sig_int(i+1,j) > 0.0) then
+        if (abs(i_denom) < eps .or. dk_sig_int(i,j) < 0.0 .or. dk_sig_int(i+1,j) < 0.0) then
           ! unstratified limit
           phys_slope = 1.0
         else
@@ -663,7 +663,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         dk_sig_v = 0.5 * (dk_sig_int(i,j)**2 + dk_sig_int(i,j+1)**2)
 
         j_denom = hdj_sig_v + hdi_sig_v + dk_sig_v
-        if (abs(j_denom) < eps .or. dk_sig_int(i,j) > 0.0 .or. dk_sig_int(i,j+1) > 0.0) then
+        if (abs(j_denom) < eps .or. dk_sig_int(i,j) < 0.0 .or. dk_sig_int(i,j+1) < 0.0) then
           dz_s_j(i,J) = 0.
         else
           dz_s_j(i,J) = hdj_sig(i,J,K) / sign(sqrt(j_denom), dk_sig_v)
@@ -727,7 +727,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         end if
 
         ! diagnose along-coordinate slope
-        if (abs(j_denom) < eps .or. dk_sig_int(i,j) > 0.0 .or. dk_sig_int(i,j+1) > 0.0) then
+        if (abs(j_denom) < eps .or. dk_sig_int(i,j) < 0.0 .or. dk_sig_int(i,j+1) < 0.0) then
           slope = 1.0
         else
           slope = (hdi_sig_v + hdj_sig_v) / j_denom
@@ -738,7 +738,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
              (hdi_sig_phys(I,j+1,K)**2 + hdi_sig_phys(I-1,j,K)**2))
         j_denom = hdi_sig_v + hdj_sig_v + dk_sig_v
 
-        if (abs(j_denom) < eps .or. dk_sig_int(i,j) > 0.0 .or. dk_sig_int(i,j+1) > 0.0) then
+        if (abs(j_denom) < eps .or. dk_sig_int(i,j) < 0.0 .or. dk_sig_int(i,j+1) < 0.0) then
           phys_slope = 1.0
         else
           phys_slope = (hdi_sig_v + hdj_sig_v) / j_denom
@@ -774,7 +774,7 @@ subroutine build_adapt_grid(G, GV, US, h, tv, dzInterface, CS, fCS, min_thicknes
         endif
 
         weight_adapt_j(i,J) = weight
-        weight_smooth_j(i,J)) = weight2
+        weight_smooth_j(i,J) = weight2
       end do
     end do
 
