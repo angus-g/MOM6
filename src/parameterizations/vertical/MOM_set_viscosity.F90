@@ -50,7 +50,7 @@ type, public :: set_visc_CS ; private
                             !! Runtime parameter `HBBL`.
   real    :: dz_bbl         !< The static bottom boundary layer thickness in height units [Z ~> m].
                             !! Runtime parameter `HBBL`.
-  real    :: cdrag          !< The quadratic drag coefficient [nondim].
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_)    :: cdrag          !< The quadratic drag coefficient [nondim].
                             !! Runtime parameter `CDRAG`.
   real    :: c_Smag         !< The Laplacian Smagorinsky coefficient for
                             !! calculating the drag in channels [nondim].
@@ -201,15 +201,8 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
   real :: ustarsq          ! 400 times the square of ustar, times
                            ! Rho0 divided by G_Earth and the conversion
                            ! from m to thickness units [H R ~> kg m-2 or kg2 m-5].
-  real :: cdrag_sqrt       ! Square root of the drag coefficient [nondim].
-  real :: cdrag_sqrt_H     ! Square root of the drag coefficient, times a unit conversion factor
-                           ! from lateral lengths to layer thicknesses [H L-1 ~> nondim or kg m-3].
-  real :: cdrag_sqrt_H_RL  ! Square root of the drag coefficient, times a unit conversion factor from
-                           ! density times lateral lengths to layer thicknesses [H L-1 R-1 ~> m3 kg-1 or nondim]
-  real :: cdrag_L_to_H     ! The drag coeffient times conversion factors from lateral
-                           ! distance to thickness units [H L-1 ~> nondim or kg m-3]
-  real :: cdrag_RL_to_H    ! The drag coeffient times conversion factors from density times lateral
-                           ! distance to thickness units [H L-1 R-1 ~> m3 kg-1 or nondim]
+  real, dimension(SZI_(G),SZJ_(G)) :: cdrag_sqrt       ! Square root of the drag coefficient [nondim].
+  real :: cdrag_interp ! Locally-interpolated cdrag
   real :: cdrag_conv       ! The drag coeffient times a combination of static conversion factors and in
                            ! situ density or Boussinesq reference density [H L-1 ~> nondim or kg m-3]
   real :: oldfn            ! The integrated energy required to
@@ -357,10 +350,6 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
 
   U_bg_sq = CS%drag_bg_vel * CS%drag_bg_vel
   cdrag_sqrt = sqrt(CS%cdrag)
-  cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
-  cdrag_sqrt_H_RL = cdrag_sqrt * US%L_to_Z * GV%RZ_to_H
-  cdrag_L_to_H = CS%cdrag * US%L_to_m * GV%m_to_H
-  cdrag_RL_to_H = CS%cdrag * US%L_to_Z * GV%RZ_to_H
   BBL_thick_max = G%Rad_Earth_L * US%L_to_Z
   K2 = max(nkmb+1, 2)
 
@@ -439,8 +428,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
 
   !$OMP parallel do default(private) shared(u,v,h,dz,tv,visc,G,GV,US,CS,Rml,nz,nkmb,nkml,K2, &
   !$OMP                                     Isq,Ieq,Jsq,Jeq,h_neglect,dz_neglect,Rho0x400_G,C2pi_3, &
-  !$OMP                                     U_bg_sq,cdrag_sqrt,cdrag_sqrt_H,cdrag_sqrt_H_RL, &
-  !$OMP                                     cdrag_L_to_H,cdrag_RL_to_H,use_BBL_EOS,BBL_thick_max, &
+  !$OMP                                     U_bg_sq,cdrag_sqrt,use_BBL_EOS,BBL_thick_max, &
   !$OMP                                     OBC,maxitt,D_u,D_v,mask_u,mask_v,pbv) &
   !$OMP                              firstprivate(Vol_quit)
   do j=Jsq,Jeq ; do m=1,2
@@ -650,15 +638,21 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         ! Find the Adcroft reciprocal of the total thickness weights
         I_hwtot = 0.0 ; if (hwtot > 0.0) I_hwtot = 1.0 / hwtot
 
+        if (m==1) then
+          cdrag_interp = 0.5 * (cdrag_sqrt(i,J) + cdrag_sqrt(i,J+1))
+        else
+          cdrag_interp = 0.5 * (cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))
+        end if
+
         ! Set u* based on u*^2 = Cdrag u_bbl^2
         if ((hwtot <= 0.0) .or. (CS%linear_drag .and. .not.allocated(tv%SpV_avg))) then
-          ustar(i) = cdrag_sqrt_H * CS%drag_bg_vel
+          ustar(i) = cdrag_interp * US%L_to_m * GV%m_to_H * CS%drag_bg_vel
         elseif (CS%linear_drag .and. allocated(tv%SpV_avg)) then
-          ustar(i) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot)
+          ustar(i) = cdrag_interp * US%L_to_Z * GV%RZ_to_H * CS%drag_bg_vel * (hwtot / SpV_htot)
         elseif (allocated(tv%SpV_avg)) then ! (.not.CS%linear_drag)
-          ustar(i) = cdrag_sqrt_H_RL * hutot / SpV_htot
+          ustar(i) = cdrag_interp * US%L_to_Z * GV%RZ_to_H * hutot / SpV_htot
         else ! (.not.CS%linear_drag .and. .not.allocated(tv%SpV_avg))
-          ustar(i) = cdrag_sqrt_H * hutot / hwtot
+          ustar(i) = cdrag_interp * US%L_to_m * GV%m_to_H * hutot / hwtot
         endif
 
         umag_avg(i) = hutot * I_hwtot
@@ -680,7 +674,11 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
 
       endif ; enddo
     else
-      do i=is,ie ; ustar(i) = cdrag_sqrt_H*CS%drag_bg_vel ; enddo
+      if (m==1) then
+        do i=is,ie ; ustar(i) = 0.5 * (cdrag_sqrt(i,J) + cdrag_sqrt(i,J+1))*CS%drag_bg_vel ; enddo
+      else
+        do i=is,ie ; ustar(i) = 0.5 * (cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))*CS%drag_bg_vel ; enddo
+      endif
     endif ! Not linear_drag
 
     if (use_BBL_EOS) then
@@ -827,7 +825,12 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
       !   xp = 1/2 + sqrt( 1/4 + (2 f h_N/u*)^2 )
       ! To avoid dividing by zero if u*=0 then
       !   xp u* = 1/2 u* + sqrt( 1/4 u*^2 + (2 f h_N)^2 )
-      if (CS%cdrag * U_bg_sq <= 0.0) then
+      if (m==1) then
+        cdrag_interp = 0.5 * (cdrag_sqrt(i,J) + cdrag_sqrt(i,J+1))
+      else
+        cdrag_interp = 0.5 * (cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))
+      end if
+      if (cdrag_interp * U_bg_sq <= 0.0) then
         ! This avoids NaNs and overflows, and could be used in all cases,
         ! but is not bitwise identical to the current code.
         ustH = ustar(i) ; root = sqrt(0.25*ustH**2 + (htot*C2f)**2)
@@ -1057,9 +1060,9 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
             endif
 
             if (allocated(tv%SpV_avg)) then
-              cdrag_conv = cdrag_RL_to_H / SpV_vel(i,k)
+              cdrag_conv = cdrag_interp**2 * US%L_to_Z * GV%RZ_to_H / SpV_vel(i,k)
             else
-              cdrag_conv = cdrag_L_to_H
+              cdrag_conv = cdrag_interp**2 * US%L_to_m * GV%m_to_H
             endif
 
             if (m==1) then ; Cell_width = G%dy_Cu(I,j)*pbv%por_face_areaU(I,j,k)
@@ -1090,18 +1093,18 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         ! the correct stress when the shear occurs over bbl_thick.
         ! See next block for explanation.
         if (CS%correct_BBL_bounds .and. &
-            cdrag_sqrt*ustar(i)*bbl_thick*BBL_visc_frac <= CS%Kv_BBL_min) then
+            cdrag_interp*ustar(i)*bbl_thick*BBL_visc_frac <= CS%Kv_BBL_min) then
           ! If the bottom stress implies less viscosity than Kv_BBL_min then
           ! set kv_bbl to the bound and recompute bbl_thick to be consistent
           ! but with a ridiculously large upper bound on thickness (for Cd u*=0)
           kv_bbl = CS%Kv_BBL_min
-          if ((cdrag_sqrt*ustar(i))*BBL_visc_frac*BBL_thick_max > kv_bbl) then
-            bbl_thick = kv_bbl / ( (cdrag_sqrt*ustar(i)) * BBL_visc_frac )
+          if ((cdrag_interp*ustar(i))*BBL_visc_frac*BBL_thick_max > kv_bbl) then
+            bbl_thick = kv_bbl / ( (cdrag_interp*ustar(i)) * BBL_visc_frac )
           else
             bbl_thick = BBL_thick_max
           endif
         else
-          kv_bbl = (cdrag_sqrt*ustar(i)) * bbl_thick*BBL_visc_frac
+          kv_bbl = (cdrag_interp*ustar(i)) * bbl_thick*BBL_visc_frac
         endif
 
       else ! Not Channel_drag.
@@ -1121,18 +1124,18 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         !      kv_bbl = 0.5 h_bbl Cdrag u_bbl
         !             = 0.5 h_bbl sqrt(Cdrag) u*
         if (CS%correct_BBL_bounds .and. &
-            cdrag_sqrt*ustar(i)*bbl_thick <= CS%Kv_BBL_min) then
+            cdrag_interp*ustar(i)*bbl_thick <= CS%Kv_BBL_min) then
           ! If the bottom stress implies less viscosity than Kv_BBL_min then
           ! set kv_bbl to the bound and recompute bbl_thick to be consistent
           ! but with a ridiculously large upper bound on thickness (for Cd u*=0)
           kv_bbl = CS%Kv_BBL_min
-          if ((cdrag_sqrt*ustar(i))*BBL_thick_max > kv_bbl) then
-            bbl_thick = kv_bbl / ( cdrag_sqrt*ustar(i) )
+          if ((cdrag_interp*ustar(i))*BBL_thick_max > kv_bbl) then
+            bbl_thick = kv_bbl / ( cdrag_interp*ustar(i) )
           else
             bbl_thick = BBL_thick_max
           endif
         else
-          kv_bbl = (cdrag_sqrt*ustar(i)) * bbl_thick
+          kv_bbl = (cdrag_interp*ustar(i)) * bbl_thick
         endif
       endif
 
@@ -1143,9 +1146,9 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         do k=nz,1,-1
           h_bbl_fr = min(h_bbl_drag(i) - h_sum, h_at_vel(i,k)) * I_hwtot
           if (allocated(tv%SpV_avg)) then
-            cdrag_conv = cdrag_RL_to_H / SpV_vel(i,k)
+            cdrag_conv = cdrag_interp**2 * US%L_to_Z * GV%RZ_to_H / SpV_vel(i,k)
           else
-            cdrag_conv = cdrag_L_to_H
+            cdrag_conv = cdrag_interp**2 * US%L_to_m * GV%m_to_H
           endif
           if (m==1) then
             visc%Ray_u(I,j,k) = visc%Ray_u(I,j,k) + (cdrag_conv * umag_avg(I)) * h_bbl_fr
@@ -1399,11 +1402,8 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
   real :: ustarsq     ! 400 times the square of ustar, times
                       ! Rho0 divided by G_Earth and the conversion
                       ! from m to thickness units [H R ~> kg m-2 or kg2 m-5].
-  real :: cdrag_sqrt  ! Square root of the drag coefficient [nondim].
-  real :: cdrag_sqrt_H  ! Square root of the drag coefficient, times a unit conversion
-                      ! factor from lateral lengths to layer thicknesses [H L-1 ~> nondim or kg m-3].
-  real :: cdrag_sqrt_H_RL ! Square root of the drag coefficient, times a unit conversion factor from
-                      ! density times lateral lengths to layer thicknesses [H L-1 R-1 ~> m3 kg-1 or nondim]
+  real, dimension(SZI_(G),SZJ_(G)) :: cdrag_sqrt  ! Square root of the drag coefficient [nondim].
+  real :: cdrag_interp
   real :: oldfn       ! The integrated energy required to
                       ! entrain up to the bottom of the layer,
                       ! divided by G_Earth [H R ~> kg m-2 or kg2 m-5].
@@ -1447,8 +1447,6 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
   Rho0x400_G = 400.0*(GV%H_to_RZ / (US%L_to_Z**2 * GV%g_Earth))
   U_bg_sq = CS%drag_bg_vel * CS%drag_bg_vel
   cdrag_sqrt = sqrt(CS%cdrag)
-  cdrag_sqrt_H = cdrag_sqrt * US%L_to_m * GV%m_to_H
-  cdrag_sqrt_H_RL = cdrag_sqrt * US%L_to_Z * GV%RZ_to_H
 
   OBC => CS%OBC
   use_EOS = associated(tv%eqn_of_state)
@@ -1520,7 +1518,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
   !$OMP parallel do default(private) shared(u,v,h,dz,tv,forces,visc,dt,G,GV,US,CS,use_EOS,dt_Rho0, &
   !$OMP                                     nonBous_ML,h_neglect,dz_neglect,h_tiny,g_H_Rho0, &
   !$OMP                                     js,je,OBC,Isq,Ieq,nz,nkml,U_star_2d,U_bg_sq,mask_v, &
-  !$OMP                                     cdrag_sqrt,cdrag_sqrt_H,cdrag_sqrt_H_RL,Rho0x400_G)
+  !$OMP                                     cdrag_sqrt,Rho0x400_G)
   do j=js,je  ! u-point loop
     if (CS%dynamic_viscous_ML) then
       do_any = .false.
@@ -1682,14 +1680,15 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
           endif
         enddo ; endif
 
+        cdrag_interp = 0.5 * (cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))
         if ((hwtot <= 0.0) .or. (CS%linear_drag .and. .not.allocated(tv%SpV_avg))) then
-          ustar(I) = cdrag_sqrt_H * CS%drag_bg_vel
+          ustar(I) = cdrag_interp * US%L_to_m * GV%m_to_H * CS%drag_bg_vel
         elseif (CS%linear_drag .and. allocated(tv%SpV_avg)) then
-          ustar(I) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot(I))
+          ustar(I) = cdrag_interp * US%L_to_Z * GV%RZ_to_H * CS%drag_bg_vel * (hwtot / SpV_htot(I))
         elseif (allocated(tv%SpV_avg)) then ! (.not.CS%linear_drag)
-          ustar(I) = cdrag_sqrt_H_RL * hutot / SpV_htot(I)
+          ustar(I) = cdrag_interp * US%L_to_Z * GV%RZ_to_H * hutot / SpV_htot(I)
         else ! (.not.CS%linear_drag .and. .not.allocated(tv%SpV_avg))
-          ustar(I) = cdrag_sqrt_H * hutot / hwtot
+          ustar(I) = cdrag_interp * US%L_to_m * GV%m_to_H * hutot / hwtot
         endif
 
         if (use_EOS) then ; if (hwtot > 0.0) then
@@ -1781,7 +1780,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
         tbl_thick = max(CS%Htbl_shelf_min, &
                         ( dztot(I)*ustar(i) ) / ( 0.5*ustar1 + sqrt((0.5*ustar1)**2 + h2f2 ) ) )
         visc%tbl_thick_shelf_u(I,j) = tbl_thick
-        visc%Kv_tbl_shelf_u(I,j) = max(CS%Kv_TBL_min, cdrag_sqrt*ustar1*tbl_thick)
+        visc%Kv_tbl_shelf_u(I,j) = max(CS%Kv_TBL_min, 0.5*(cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))*ustar1*tbl_thick)
       endif ; enddo ! I-loop
     endif ! do_any_shelf
 
@@ -1790,7 +1789,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
   !$OMP parallel do default(private) shared(u,v,h,dz,tv,forces,visc,dt,G,GV,US,CS,use_EOS,dt_Rho0, &
   !$OMP                                     nonBous_ML,h_neglect,dz_neglect,h_tiny,g_H_Rho0, &
   !$OMP                                     is,ie,OBC,Jsq,Jeq,nz,nkml,U_bg_sq,U_star_2d,mask_u, &
-  !$OMP                                     cdrag_sqrt,cdrag_sqrt_H,cdrag_sqrt_H_RL,Rho0x400_G)
+  !$OMP                                     cdrag_sqrt,Rho0x400_G)
   do J=Jsq,Jeq  ! v-point loop
     if (CS%dynamic_viscous_ML) then
       do_any = .false.
@@ -1954,14 +1953,15 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
           endif
         enddo ; endif
 
+        cdrag_interp = 0.5 * (cdrag_sqrt(i,J) + cdrag_sqrt(i,J+1))
         if ((hwtot <= 0.0) .or. (CS%linear_drag .and. .not.allocated(tv%SpV_avg))) then
-          ustar(i) = cdrag_sqrt_H * CS%drag_bg_vel
+          ustar(i) = cdrag_interp * US%L_to_m * GV%m_to_H * CS%drag_bg_vel
         elseif (CS%linear_drag .and. allocated(tv%SpV_avg)) then
-          ustar(i) = cdrag_sqrt_H_RL * CS%drag_bg_vel * (hwtot / SpV_htot(i))
+          ustar(i) = cdrag_interp * US%L_to_Z * GV%RZ_to_H * CS%drag_bg_vel * (hwtot / SpV_htot(i))
         elseif (allocated(tv%SpV_avg)) then ! (.not.CS%linear_drag)
-          ustar(i) = cdrag_sqrt_H_RL * hutot / SpV_htot(i)
+          ustar(i) = cdrag_interp * US%L_to_Z * GV%RZ_to_H * hutot / SpV_htot(i)
         else ! (.not.CS%linear_drag .and. .not.allocated(tv%SpV_avg))
-          ustar(i) = cdrag_sqrt_H * hutot / hwtot
+          ustar(i) = cdrag_interp * US%L_to_m * GV%m_to_H * hutot / hwtot
         endif
 
         if (use_EOS) then ; if (hwtot > 0.0) then
@@ -2053,7 +2053,7 @@ subroutine set_viscous_ML(u, v, h, tv, forces, visc, dt, G, GV, US, CS)
         tbl_thick = max(CS%Htbl_shelf_min, &
             ( dztot(i)*ustar(i) ) / ( 0.5*ustar1 + sqrt((0.5*ustar1)**2 + h2f2 ) ) )
         visc%tbl_thick_shelf_v(i,J) = tbl_thick
-        visc%Kv_tbl_shelf_v(i,J) = max(CS%Kv_TBL_min, cdrag_sqrt*ustar1*tbl_thick)
+        visc%Kv_tbl_shelf_v(i,J) = max(CS%Kv_TBL_min, 0.5*(cdrag_sqrt(i,J) + cdrag_sqrt(i,J+1))*ustar1*tbl_thick)
 
       endif ; enddo ! i-loop
     endif ! do_any_shelf
@@ -2229,6 +2229,7 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                              ! is used in place of the absolute value of the local Coriolis
                              ! parameter in the denominator of some expressions [nondim]
   real    :: Chan_max_thick_dflt ! The default value for CHANNEL_DRAG_MAX_THICK [Z ~> m]
+  real :: scalar_cdrag
 
   integer :: i, j, k, is, ie, js, je
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, nz
@@ -2239,8 +2240,9 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                              ! isopycnal or stacked shallow water mode.
   logical :: use_temperature ! If true, temperature and salinity are used as state variables.
   logical :: use_EOS         ! If true, density calculated from T & S using an equation of state.
-  character(len=200) :: filename, tideamp_file ! Input file names or paths
-  character(len=80)  :: tideamp_var ! Input file variable names
+  logical :: variable_cdrag
+  character(len=200) :: filename, tideamp_file, cdrag_file ! Input file names or paths
+  character(len=80)  :: tideamp_var, cdrag_var ! Input file variable names
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
   character(len=40)  :: mdl = "MOM_set_visc"  ! This module's name.
@@ -2251,6 +2253,8 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed ; nz = GV%ke
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
+
+  ALLOC_(CS%cdrag(isd:ied, jsd:jed))
 
   CS%diag => diag
 
@@ -2355,10 +2359,28 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                  "defined but LINEAR_DRAG is not.", &
                  units="m", scale=US%m_to_Z, fail_if_missing=.true.) ! Rescaled later
   if (CS%bottomdraglaw) then
-    call get_param(param_file, mdl, "CDRAG", CS%cdrag, &
-                 "CDRAG is the drag coefficient relating the magnitude of "//&
-                 "the velocity field to the bottom stress. CDRAG is only "//&
-                 "used if BOTTOMDRAGLAW is defined.", units="nondim", default=0.003)
+    call get_param(param_file, mdl, "VARIABLE_CDRAG", variable_cdrag, &
+         "Whether or not to use a spatially-varying drag coefficient.", &
+         default=.false.)
+    call get_param(param_file, mdl, "CDRAG_FILE", cdrag_file, &
+         "The name of the file with the spatially-varying drag coefficient.", &
+         default="", do_not_log=.not.variable_cdrag)
+    call get_param(param_file, mdl, "CDRAG_VAR", cdrag_var, &
+         "The name of the variable in CDRAG_FILE containing cdrag at h points.", &
+         default="cdrag", do_not_log=.not.variable_cdrag)
+    call get_param(param_file, mdl, "CDRAG", scalar_cdrag, &
+           "The drag coefficient relating the magnitude of the "//&
+           "velocity field to the bottom stress. CDRAG is only used "//&
+           "if BOTTOMDRAGLAW is true.", units="nondim", default=0.003, &
+           do_not_log=variable_cdrag)
+    if (variable_cdrag) then
+      cdrag_file = trim(CS%inputdir)//trim(cdrag_file)
+      call log_param(param_file, mdl, "INPUTDIR/CDRAG_FILE", cdrag_file)
+      call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag, G%Domain)
+    else
+      CS%cdrag(:,:) = scalar_cdrag
+    endif
+
     call get_param(param_file, mdl, "BBL_USE_TIDAL_BG", CS%BBL_use_tidal_bg, &
                  "Flag to use the tidal RMS amplitude in place of constant "//&
                  "background velocity for computing u* in the BBL. "//&

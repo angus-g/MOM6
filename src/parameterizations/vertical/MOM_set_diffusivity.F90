@@ -77,7 +77,7 @@ type, public :: set_diffusivity_CS ; private
                              !! [nondim].  See (http://en.wikipedia.org/wiki/Von_Karman_constant)
   real    :: BBL_effic       !< efficiency with which the energy extracted
                              !! by bottom drag drives BBL diffusion [nondim]
-  real    :: cdrag           !< quadratic drag coefficient [nondim]
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_)    :: cdrag           !< quadratic drag coefficient [nondim]
   real    :: dz_BBL_avg_min  !< A minimal distance over which to average to determine the average
                              !! bottom boundary layer density [Z ~> m]
   real    :: IMax_decay      !< Inverse of a maximum decay scale for
@@ -1212,7 +1212,7 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, j, TKE_to_Kd, maxTKE,
   real    :: TKE_Ray        ! TKE from layer Rayleigh drag used to drive mixing in layer [H Z2 T-3 ~> m3 s-3 or W m-2]
   real    :: TKE_here       ! TKE that goes into mixing in this layer [H Z2 T-3 ~> m3 s-3 or W m-2]
   real    :: dRl, dRbot     ! temporaries holding density differences [R ~> kg m-3]
-  real    :: cdrag_sqrt     ! square root of the drag coefficient [nondim]
+  real, dimension(SZI_(G),SZJ_(G))    :: cdrag_sqrt     ! square root of the drag coefficient [nondim]
   real    :: ustar_h        ! Ustar at a thickness point rescaled into thickness
                             ! flux units  [H T-1 ~> m s-1 or kg m-2 s-1].
   real    :: absf           ! average absolute Coriolis parameter around a thickness point [T-1 ~> s-1]
@@ -1263,7 +1263,7 @@ subroutine add_drag_diffusivity(h, u, v, tv, fluxes, visc, j, TKE_to_Kd, maxTKE,
       ! If ustar_h = 0, this is land so this value doesn't matter.
       I2decay(i) = 0.5*CS%IMax_decay
     endif
-    TKE(i) = ((CS%BBL_effic * cdrag_sqrt) * exp(-I2decay(i)*h(i,j,nz)) ) * visc%TKE_BBL(i,j)
+    TKE(i) = ((CS%BBL_effic * cdrag_sqrt(i,j)) * exp(-I2decay(i)*h(i,j,nz)) ) * visc%TKE_BBL(i,j)
 
     if (associated(fluxes%TKE_tidal)) &
       TKE(i) = TKE(i) + fluxes%TKE_tidal(i,j) * GV%RZ_to_H * &
@@ -1429,7 +1429,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
   real :: TKE_remaining    ! remaining TKE available for mixing in this layer and above [H Z2 T-3 ~> m3 s-3 or W m-2]
   real :: TKE_consumed     ! TKE used for mixing in this layer [H Z2 T-3 ~> m3 s-3 or W m-2]
   real :: TKE_Kd_wall      ! TKE associated with unlimited law of the wall mixing [H Z2 T-3 ~> m3 s-3 or W m-2]
-  real :: cdrag_sqrt       ! square root of the drag coefficient [nondim]
+  real, dimension(SZI_(G),SZJ_(G)) :: cdrag_sqrt       ! square root of the drag coefficient [nondim]
   real :: ustar            ! value of ustar at a thickness point [H T-1 ~> m s-1 or kg m-2 s-1].
   real :: ustar2           ! The square of ustar [H2 T-2 ~> m2 s-2 or kg2 m-4 s-2]
   real :: absf             ! average absolute value of Coriolis parameter around a thickness point [T-1 ~> s-1]
@@ -1491,7 +1491,7 @@ subroutine add_LOTW_BBL_diffusivity(h, u, v, tv, fluxes, visc, j, N2_int, Rho_bo
     ! Energy input at the bottom [H Z2 T-3 ~> m3 s-3 or W m-2].
     ! (Note that visc%TKE_BBL is in [H Z2 T-3 ~> m3 s-3 or W m-2], set in set_BBL_TKE().)
     ! I am still unsure about sqrt(cdrag) in this expressions - AJA
-    TKE_column = cdrag_sqrt * visc%TKE_BBL(i,j)
+    TKE_column = cdrag_sqrt(i,j) * visc%TKE_BBL(i,j)
     ! Add in tidal dissipation energy at the bottom [H Z2 T-3 ~> m3 s-3 or W m-2].
     ! Note that TKE_tidal is in [R Z3 T-3 ~> W m-2].
     if (associated(fluxes%TKE_tidal)) &
@@ -1759,7 +1759,8 @@ subroutine set_BBL_TKE(u, v, h, tv, fluxes, visc, G, GV, US, CS, OBC)
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: &
     dz       ! The vertical distance between interfaces around a layer [Z ~> m]
 
-  real :: cdrag_sqrt  ! Square root of the drag coefficient [nondim]
+  real, dimension(SZI_(G),SZJ_(G)) :: cdrag_sqrt  ! Square root of the drag coefficient [nondim]
+  real :: cdrag_interp
   real :: hvel        ! thickness at velocity points [Z ~> m]
 
   logical :: domore, do_i(SZI_(G))
@@ -1807,10 +1808,13 @@ subroutine set_BBL_TKE(u, v, h, tv, fluxes, visc, G, GV, US, CS, OBC)
       do_i(i) = .false. ; vstar(i,J) = 0.0 ; vhtot(i) = 0.0 ; htot(i) = 0.0
     enddo
     if (allocated(visc%Kv_bbl_v)) then
-      do i=is,ie ; if ((G%mask2dCv(i,J) > 0.0) .and. (cdrag_sqrt*visc%bbl_thick_v(i,J) > 0.0)) then
-        do_i(i) = .true.
-        vstar(i,J) = visc%Kv_bbl_v(i,J) / (cdrag_sqrt*visc%bbl_thick_v(i,J))
-      endif ; enddo
+      do i=is,ie
+        cdrag_interp = 0.5 * (cdrag_sqrt(i,J) + cdrag_sqrt(i,J+1))
+        if ((G%mask2dCv(i,J) > 0.0) .and. (cdrag_interp*visc%bbl_thick_v(i,J) > 0.0)) then
+          do_i(i) = .true.
+          vstar(i,J) = visc%Kv_bbl_v(i,J) / (cdrag_interp*visc%bbl_thick_v(i,J))
+        endif
+      enddo
     endif
     !### What about terms from visc%Ray?
 
@@ -1861,10 +1865,13 @@ subroutine set_BBL_TKE(u, v, h, tv, fluxes, visc, G, GV, US, CS, OBC)
       do_i(I) = .false. ; ustar(I) = 0.0 ; uhtot(I) = 0.0 ; htot(I) = 0.0
     enddo
     if (allocated(visc%bbl_thick_u)) then
-      do I=is-1,ie ; if ((G%mask2dCu(I,j) > 0.0) .and. (cdrag_sqrt*visc%bbl_thick_u(I,j) > 0.0))  then
-        do_i(I) = .true.
-        ustar(I) = visc%Kv_bbl_u(I,j) / (cdrag_sqrt*visc%bbl_thick_u(I,j))
-      endif ; enddo
+      do I=is-1,ie
+        cdrag_interp = 0.5 * (cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))
+        if ((G%mask2dCu(I,j) > 0.0) .and. (cdrag_interp*visc%bbl_thick_u(I,j) > 0.0))  then
+          do_i(I) = .true.
+          ustar(I) = visc%Kv_bbl_u(I,j) / (cdrag_interp*visc%bbl_thick_u(I,j))
+        endif
+      enddo
     endif
 
     do k=nz,1,-1 ; domore = .false.
@@ -2075,12 +2082,16 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
                              ! in setting the default for other diffusivities.
   real    :: omega_frac_dflt ! The default value for the fraction of the absolute rotation rate
                              ! that is used in place of the absolute value of the local Coriolis
-                             ! parameter in the denominator of some expressions [nondim]
+  ! parameter in the denominator of some expressions [nondim]
+  real    :: scalar_cdrag    ! The scalar value cdrag used everywhere [nondim]
   logical :: Bryan_Lewis_diffusivity ! If true, the background diapycnal diffusivity uses
                                      ! the Bryan-Lewis (1979) style tanh profile.
   logical :: use_regridding  ! If true, use the ALE algorithm rather than layered
                              ! isopycnal or stacked shallow water mode.
   logical :: TKE_to_Kd_used  ! If true, TKE_to_Kd and maxTKE need to be calculated.
+  logical :: variable_cdrag  ! If true, use a spatially-varying drag coefficient
+  character(len=200) :: cdrag_file ! File containing spatially-varying cdrag
+  character(len=80) :: cdrag_var ! cdrag variable name in cdrag_file
   integer :: is, ie, js, je
   integer :: isd, ied, jsd, jed
 
@@ -2096,12 +2107,14 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
   is  = G%isc ; ie  = G%iec ; js  = G%jsc ; je  = G%jec
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
 
+  ALLOC_(CS%cdrag(isd:ied, jsd:jed))
+
   CS%diag => diag
   CS%int_tide_CSp  => int_tide_CSp
 
   ! These default values always need to be set.
   CS%BBL_mixing_as_max = .true.
-  CS%cdrag = 0.003 ; CS%BBL_effic = 0.0
+  CS%cdrag(:,:) = 0.003 ; CS%BBL_effic = 0.0
   CS%bulkmixedlayer = (GV%nkml > 0)
 
   ! Read all relevant parameters and write them to the model log.
@@ -2191,10 +2204,27 @@ subroutine set_diffusivity_init(Time, G, GV, US, param_file, diag, CS, int_tide_
                  "may be an assumed value or it may be based on the actual "//&
                  "velocity in the bottommost HBBL, depending on LINEAR_DRAG.", default=.true.)
   if  (CS%bottomdraglaw) then
-    call get_param(param_file, mdl, "CDRAG", CS%cdrag, &
-                 "The drag coefficient relating the magnitude of the "//&
-                 "velocity field to the bottom stress. CDRAG is only used "//&
-                 "if BOTTOMDRAGLAW is true.", units="nondim", default=0.003)
+    call get_param(param_file, mdl, "VARIABLE_CDRAG", variable_cdrag, &
+         "Whether or not to use a spatially-varying drag coefficient.", &
+         default=.false.)
+    call get_param(param_file, mdl, "CDRAG_FILE", cdrag_file, &
+         "The name of the file with the spatially-varying drag coefficient.", &
+         default="", do_not_log=.not.variable_cdrag)
+    call get_param(param_file, mdl, "CDRAG_VAR", cdrag_var, &
+         "The name of the variable in CDRAG_FILE containing cdrag at h points.", &
+         default="cdrag", do_not_log=.not.variable_cdrag)
+    call get_param(param_file, mdl, "CDRAG", scalar_cdrag, &
+           "The drag coefficient relating the magnitude of the "//&
+           "velocity field to the bottom stress. CDRAG is only used "//&
+           "if BOTTOMDRAGLAW is true.", units="nondim", default=0.003, &
+           do_not_log=variable_cdrag)
+    if (variable_cdrag) then
+      cdrag_file = trim(CS%inputdir)//trim(cdrag_file)
+      call log_param(param_file, mdl, "INPUTDIR/CDRAG_FILE", cdrag_file)
+      call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag, G%Domain)
+    else
+      CS%cdrag(:,:) = scalar_cdrag
+    endif
     call get_param(param_file, mdl, "BBL_EFFIC", CS%BBL_effic, &
                  "The efficiency with which the energy extracted by "//&
                  "bottom drag drives BBL diffusion.  This is only "//&
