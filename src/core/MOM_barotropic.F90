@@ -2067,19 +2067,26 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       !$OMP end do nowait
 
       if (CS%linear_wave_drag) then
+        vbt_on_u(:,:) = 0.
+        ubt_on_v(:,:) = 0.
+
         ! interpolate cross velocity terms, weight by area since it applies over a bottom boundary layer
         do j=jsv,jev ; do I=isv-1,iev
-          vbt_on_u(I,j) = ( &
-               (vbt(i,J) * G%areaCv(i,J) + vbt(i+1,J-1) * G%areaCv(i+1,J-1)) + &
-               (vbt(i,J-1) * G%areaCv(i,J-1) + vbt(i+1,J) * G%areaCv(i+1,J))) / &
-               ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+          if (G%mask2dCu(I,j) > 0.0) then
+            vbt_on_u(I,j) = ( &
+                 (vbt(i,J) * G%areaCv(i,J) + vbt(i+1,J-1) * G%areaCv(i+1,J-1)) + &
+                 (vbt(i,J-1) * G%areaCv(i,J-1) + vbt(i+1,J) * G%areaCv(i+1,J))) / &
+                 ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+          endif
         enddo; enddo
 
         do J=jsv-1,jev ; do i=isv-1,iev+1
-          ubt_on_v(i,J) = ( &
-               (ubt(I,j) * G%areaCu(I,j) + ubt(I-1,j+1) * G%areaCu(I-1,j+1)) + &
-               (ubt(I-1,j) * G%areaCu(I-1,j) + ubt(I,j+1) * G%areaCu(I,j+1))) / &
-               ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+          if (G%mask2dCv(i,J) > 0.0) then
+            ubt_on_v(i,J) = ( &
+                 (ubt(I,j) * G%areaCu(I,j) + ubt(I-1,j+1) * G%areaCu(I-1,j+1)) + &
+                 (ubt(I-1,j) * G%areaCu(I-1,j) + ubt(I,j+1) * G%areaCu(I,j+1))) / &
+                 ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+          endif
         enddo; enddo
 
         !$OMP do schedule(static)
@@ -2246,18 +2253,25 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       !$OMP end do nowait
 
       if (CS%linear_wave_drag) then
+        vbt_on_u(:,:) = 0.
+        ubt_on_v(:,:) = 0.
+
         do j=jsv-1,jev+1 ; do I=isv-1,iev
-          vbt_on_u(I,j) = ( &
-               (vbt(i,J) * G%areaCv(i,J) + vbt(i+1,J-1) * G%areaCv(i+1,J-1)) + &
-               (vbt(i,J-1) * G%areaCv(i,J-1) + vbt(i+1,J) * G%areaCv(i+1,J))) / &
-               ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+          if (G%mask2dCu(I,j) > 0.0) then
+            vbt_on_u(I,j) = ( &
+                 (vbt(i,J) * G%areaCv(i,J) + vbt(i+1,J-1) * G%areaCv(i+1,J-1)) + &
+                 (vbt(i,J-1) * G%areaCv(i,J-1) + vbt(i+1,J) * G%areaCv(i+1,J))) / &
+                 ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+          endif
         enddo; enddo
 
         do J=jsv-1,jev ; do i=isv,iev
-          ubt_on_v(i,J) = ( &
-               (ubt(I,j) * G%areaCu(I,j) + ubt(I-1,j+1) * G%areaCu(I-1,j+1)) + &
-               (ubt(I-1,j) * G%areaCu(I-1,j) + ubt(I,j+1) * G%areaCu(I,j+1))) / &
-               ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+          if (G%mask2dCv(i,J) > 0.0) then
+            ubt_on_v(i,J) = ( &
+                 (ubt(I,j) * G%areaCu(I,j) + ubt(I-1,j+1) * G%areaCu(I-1,j+1)) + &
+                 (ubt(I-1,j) * G%areaCu(I-1,j) + ubt(I,j+1) * G%areaCu(I,j+1))) / &
+                 ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+          endif
         enddo; enddo
 
         !$OMP do schedule(static)
