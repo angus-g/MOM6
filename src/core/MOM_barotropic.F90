@@ -117,6 +117,7 @@ type, public :: barotropic_CS ; private
   real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: lin_drag_uv_u
           !< A spatially varying linear drag coefficient acting on the cross-component of zonal barotropic flow
           !! [H T-1 ~> m s-1 or kg m-2 s-1].
+  real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: lin_drag_dudt
   real ALLOCABLE_, dimension(NIMEMB_PTR_,NJMEM_) :: ubt_IC
           !< The barotropic solvers estimate of the zonal velocity that will be the initial
           !! condition for the next call to btstep [L T-1 ~> m s-1].
@@ -130,6 +131,7 @@ type, public :: barotropic_CS ; private
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: lin_drag_uv_v
           !< A spatially varying linear drag coefficient acting on the cross-component of zonal barotropic flow
           !! [H T-1 ~> m s-1 or kg m-2 s-1].
+  real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: lin_drag_dvdt
   real ALLOCABLE_, dimension(NIMEM_,NJMEMB_PTR_) :: vbt_IC
           !< The barotropic solvers estimate of the zonal velocity that will be the initial
           !! condition for the next call to btstep [L T-1 ~> m s-1].
@@ -540,6 +542,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   real :: q(SZIBW_(CS),SZJBW_(CS)) ! A pseudo potential vorticity [T-1 H-1 ~> s-1 m-1 or m2 s-1 kg-1]
   real, dimension(SZIBW_(CS),SZJW_(CS)) :: &
     ubt, &        ! The zonal barotropic velocity [L T-1 ~> m s-1].
+    dubtdt, &
     vbt_on_u, &   ! The meridional barotropic velocity on zonal velocity points [L T-1 ~> m s-1].
     bt_rem_u, &   ! The fraction of the barotropic zonal velocity that remains
                   ! after a time step, the remainder being lost to bottom drag [nondim].
@@ -569,6 +572,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
                   ! to the reference velocities [L T-2 ~> m s-2].
     PFu, &        ! The zonal pressure force acceleration [L T-2 ~> m s-2].
     Rayleigh_u, & ! A Rayleigh drag timescale operating at u-points [T-1 ~> s-1].
+    Rayleigh_dudt, &
     Rayleigh_uv_u, & ! A Rayleigh drag timescale operating on cross-velocities at u-points [T-1 ~> s-1].
     PFu_bt_sum, & ! The summed zonal barotropic pressure gradient force [L T-2 ~> m s-2].
     Coru_bt_sum, & ! The summed zonal barotropic Coriolis acceleration [L T-2 ~> m s-2].
@@ -577,6 +581,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
                   ! spacing [H L ~> m2 or kg m-1].
   real, dimension(SZIW_(CS),SZJBW_(CS)) :: &
     vbt, &        ! The meridional barotropic velocity [L T-1 ~> m s-1].
+    dvbtdt, &
     ubt_on_v, &   ! The zonal barotropic velocity on meridional velocity points [L T-1 ~> m s-1].
     bt_rem_v, &   ! The fraction of the barotropic meridional velocity that
                   ! remains after a time step, the rest being lost to bottom
@@ -602,6 +607,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
                   ! to the reference velocities [L T-2 ~> m s-2].
     PFv, &        ! The meridional pressure force acceleration [L T-2 ~> m s-2].
     Rayleigh_v, & ! A Rayleigh drag timescale operating at v-points [T-1 ~> s-1].
+    Rayleigh_dvdt, &
     Rayleigh_uv_v, & ! A Rayleigh drag timescale operating on cross-velocities at v-points [T-1 ~> s-1].
     PFv_bt_sum, & ! The summed meridional barotropic pressure gradient force,
                   ! [L T-2 ~> m s-2].
@@ -872,6 +878,8 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     if (CS%linear_wave_drag) then
       call create_group_pass(CS%pass_eta_bt_rem, Rayleigh_u, Rayleigh_v, &
            CS%BT_Domain, To_All+Scalar_Pair)
+      call create_group_pass(CS%pass_eta_bt_rem, Rayleigh_dudt, Rayleigh_dvdt, &
+           CS%BT_Domain, To_All+Scalar_Pair)
       call create_group_pass(CS%pass_eta_bt_rem, Rayleigh_uv_u, Rayleigh_uv_v, &
            CS%BT_Domain, To_All+Scalar_Pair)
     end if
@@ -1009,10 +1017,14 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
     !$OMP parallel do default(shared)
     do j=CS%jsdw,CS%jedw ; do I=CS%isdw-1,CS%iedw
       Rayleigh_u(I,j) = 0.0
+      Rayleigh_uv_u(I,j) = 0.0
+      Rayleigh_dudt(I,j) = 0.0
     enddo ; enddo
     !$OMP parallel do default(shared)
     do J=CS%jsdw-1,CS%jedw ; do i=CS%isdw,CS%iedw
       Rayleigh_v(i,J) = 0.0
+      Rayleigh_uv_v(i,J) = 0.0
+      Rayleigh_dvdt(i,J) = 0.0
     enddo ; enddo
   endif
 
@@ -1550,6 +1562,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
       Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
       Rayleigh_uv_u(I,j) = CS%lin_drag_uv_u(I,j) / Htot
+      Rayleigh_dudt(I,j) = CS%lin_drag_dudt(I,j) / Htot
     endif ; enddo ; enddo
     !$OMP do
     do J=js-1,je ; do i=is,ie ; if (CS%lin_drag_v(i,J) > 0.0) then
@@ -1560,6 +1573,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
       Rayleigh_v(i,J) = CS%lin_drag_v(i,J) / Htot
       Rayleigh_uv_v(i,J) = CS%lin_drag_uv_v(i,J) / Htot
+      Rayleigh_dvdt(i,J) = CS%lin_drag_dvdt(i,J) / Htot
     endif ; enddo ; enddo
   endif
 
@@ -2020,6 +2034,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         vel_prev = vbt(i,J)
         vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
              dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
+        dvbtdt(i,J) = (vbt(i,J) - vel_prev) * Idtbt
         if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
       enddo ; enddo
@@ -2084,6 +2099,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         vel_prev = ubt(I,j)
         ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
              dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
+        dubtdt(I,j) = (ubt(I,j) - vel_prev) * Idtbt
         if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
       enddo ; enddo
@@ -2116,13 +2132,15 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         do j=jsv,jev ; do I=isv-1,iev
           u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * &
                ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j) &
-               - vbt_on_u(I,j)*Rayleigh_uv_u(I,j))
+               - vbt_on_u(I,j)*Rayleigh_uv_u(I,j) &
+               + dubtdt(I,j)*Rayleigh_dudt(I,j))
         enddo; enddo
 
         do J=jsv-1,jev ; do i=isv-1,iev+1
           v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * &
                ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J) &
-               - ubt_on_v(i,J)*Rayleigh_uv_v(i,J))
+               - ubt_on_v(i,J)*Rayleigh_uv_v(i,J) &
+               + dvbtdt(i,J)*Rayleigh_dvdt(i,J))
         enddo ; enddo
         !$OMP end do nowait
       else
@@ -2195,6 +2213,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         vel_prev = ubt(I,j)
         ubt(I,j) = bt_rem_u(I,j) * (ubt(I,j) + &
              dtbt * ((BT_force_u(I,j) + Cor_u(I,j)) + PFu(I,j)))
+        dubtdt(I,j) = (ubt(I,j) - vel_prev) * Idtbt
         if (abs(ubt(I,j)) < CS%vel_underflow) ubt(I,j) = 0.0
         ubt_trans(I,j) = trans_wt1*ubt(I,j) + trans_wt2*vel_prev
       enddo ; enddo
@@ -2270,6 +2289,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         vel_prev = vbt(i,J)
         vbt(i,J) = bt_rem_v(i,J) * (vbt(i,J) + &
              dtbt * ((BT_force_v(i,J) + Cor_v(i,J)) + PFv(i,J)))
+        dvbtdt(i,J) = (vbt(i,J) - vel_prev) * Idtbt
         if (abs(vbt(i,J)) < CS%vel_underflow) vbt(i,J) = 0.0
         vbt_trans(i,J) = trans_wt1*vbt(i,J) + trans_wt2*vel_prev
       enddo ; enddo
@@ -2301,13 +2321,15 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         do j=jsv-1,jev+1 ; do I=isv-1,iev
           u_accel_bt(I,j) = u_accel_bt(I,j) + wt_accel(n) * &
                ((Cor_u(I,j) + PFu(I,j)) - ubt(I,j)*Rayleigh_u(I,j) &
-               - vbt_on_u(I,j)*Rayleigh_uv_u(I,j))
+               - vbt_on_u(I,j)*Rayleigh_uv_u(I,j) &
+               + dubtdt(I,j)*Rayleigh_dudt(I,j))
         enddo ; enddo
 
         do J=jsv-1,jev ; do i=isv,iev
           v_accel_bt(i,J) = v_accel_bt(i,J) + wt_accel(n) * &
                ((Cor_v(i,J) + PFv(i,J)) - vbt(i,J)*Rayleigh_v(i,J) &
-               - ubt_on_v(i,J)*Rayleigh_uv_v(i,J))
+               - ubt_on_v(i,J)*Rayleigh_uv_v(i,J) &
+               + dvbtdt(i,J)*Rayleigh_dvdt(i,J))
         enddo ; enddo
         !$OMP end do nowait
       else
@@ -2672,7 +2694,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       do J=js-1,je ; do i=is,ie ; CS%vbt_IC(i,J) = vbt_wtd(i,J) ; enddo ; enddo
     endif
 
-!  Offer various barotropic terms for averaging.
+    !  Offer various barotropic terms for averaging.
     if (CS%id_PFu_bt > 0) then
       do j=js,je ; do I=is-1,ie
         PFu_bt_sum(I,j) = PFu_bt_sum(I,j) * I_sum_wt_accel
@@ -4441,6 +4463,7 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                                          ! name in wave_drag_file.
   character(len=80)  :: wave_drag_uv_var ! The cross-velocity wave drag piston velocity variable
                                          ! name in wave_drag_file.
+  character(len=80)  :: wave_drag_dudt_var, wave_drag_dvdt_var
   real :: mean_SL     ! The mean sea level that is used along with the bathymetry to estimate the
                       ! geometry when LINEARIZED_BT_CORIOLIS is true or BT_NONLIN_STRESS is false [Z ~> m].
   real :: Z_to_H      ! A local unit conversion factor [H Z-1 ~> nondim or kg m-3]
@@ -4457,7 +4480,7 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
   logical :: use_BT_cont_type
   logical :: use_tides
-  logical :: do_wave_drag_h, do_wave_drag_u, do_wave_drag_v, do_wave_drag_uv
+  logical :: do_wave_drag_h, do_wave_drag_u, do_wave_drag_v, do_wave_drag_uv, do_wave_drag_dudt, do_wave_drag_dvdt
   character(len=48) :: thickness_units, flux_units
   character*(40) :: hvel_str
   integer :: is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
@@ -4708,6 +4731,18 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
                  "barotropic linear wave drag piston velocities to apply to"//&
                  "cross-velocity components.", &
                  default="rUV", do_not_log=.not.do_wave_drag_uv)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_DUDT", do_wave_drag_dudt, &
+       "Whether to enable the zonal spring-force component of wave drag.", &
+       default=.false., do_not_log=.not.CS%linear_wave_drag)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_DUDT_VAR", wave_drag_dudt_var, &
+       "The name of the zonal spring force wave drag piston velocity variable.", &
+       default="rDUDT", do_not_log=.not.do_wave_drag_dudt)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_DVDT", do_wave_drag_dvdt, &
+       "Whether to enable the meridional spring-force component of wave drag.", &
+       default=.false., do_not_log=.not.CS%linear_wave_drag)
+  call get_param(param_file, mdl, "BT_WAVE_DRAG_DVDT_VAR", wave_drag_dvdt_var, &
+       "The name of the meridional spring force wave drag piston velocity variable.", &
+       default="rDVDT", do_not_log=.not.do_wave_drag_dvdt)
   call get_param(param_file, mdl, "BT_WAVE_DRAG_SCALE", wave_drag_scale, &
                  "A scaling factor for the barotropic linear wave drag "//&
                  "piston velocities.", default=1.0, units="nondim", &
@@ -4923,6 +4958,8 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
     ALLOC_(CS%lin_drag_v(isd:ied,JsdB:JedB)) ; CS%lin_drag_v(:,:) = 0.0
     ALLOC_(CS%lin_drag_uv_u(IsdB:IedB,jsd:jed)) ; CS%lin_drag_uv_u(:,:) = 0.0
     ALLOC_(CS%lin_drag_uv_v(isd:ied,JsdB:JedB)) ; CS%lin_drag_uv_v(:,:) = 0.0
+    ALLOC_(CS%lin_drag_dudt(IsdB:IedB,jsd:jed)) ; CS%lin_drag_dudt(:,:) = 0.0
+    ALLOC_(CS%lin_drag_dvdt(isd:ied,JsdB:JedB)) ; CS%lin_drag_dvdt(:,:) = 0.0
 
     if (len_trim(wave_drag_file) > 0) then
       inputdir = "." ;  call get_param(param_file, mdl, "INPUTDIR", inputdir)
@@ -4976,6 +5013,22 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
 
       deallocate(lin_drag_h)
     endif
+
+    if (do_wave_drag_dudt) then
+      call MOM_read_data(wave_drag_file, wave_drag_dudt_var, CS%lin_drag_dudt, G%Domain, &
+           position=EAST_FACE, scale=GV%m_to_H*US%T_to_s)
+      do j=js,je ; do I=is-1,ie
+        CS%lin_drag_dudt(I,j) = wave_drag_scale * CS%lin_drag_dudt(I,j)
+      end do; end do
+    end if
+
+    if (do_wave_drag_dvdt) then
+      call MOM_read_data(wave_drag_file, wave_drag_dvdt_var, CS%lin_drag_dvdt, G%Domain, &
+           position=NORTH_FACE, scale=GV%m_to_H*US%T_to_s)
+      do J=js-1,je ; do i=is,ie
+        CS%lin_drag_dvdt(i,J) = wave_drag_scale * CS%lin_drag_dvdt(i,J)
+      end do; end do
+    end if
   endif
 
   CS%dtbt_fraction = 0.98 ; if (dtbt_input < 0.0) CS%dtbt_fraction = -dtbt_input
