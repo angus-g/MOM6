@@ -2378,6 +2378,7 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
       cdrag_file = trim(CS%inputdir)//trim(cdrag_file)
       call log_param(param_file, mdl, "INPUTDIR/CDRAG_FILE", cdrag_file)
       call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag, G%Domain)
+      call pass_var(CS%cdrag, G%domain)
     endif
 
     call get_param(param_file, mdl, "BBL_USE_TIDAL_BG", CS%BBL_use_tidal_bg, &
