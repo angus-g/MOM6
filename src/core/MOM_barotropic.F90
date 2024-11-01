@@ -335,6 +335,7 @@ type, public :: barotropic_CS ; private
   integer :: id_ubtdt = -1, id_vbtdt = -1
   integer :: id_ubt_hifreq = -1, id_vbt_hifreq = -1, id_eta_hifreq = -1
   integer :: id_uhbt_hifreq = -1, id_vhbt_hifreq = -1, id_eta_pred_hifreq = -1
+  integer :: id_udrag_hifreq = -1, id_uspring_hifreq = -1
   integer :: id_gtotn = -1, id_gtots = -1, id_gtote = -1, id_gtotw = -1
   integer :: id_uhbt = -1, id_frhatu = -1, id_vhbt = -1, id_frhatv = -1
   integer :: id_frhatu1 = -1, id_frhatv1 = -1
@@ -839,7 +840,8 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   do_hifreq_output = .false.
   if ((CS%id_ubt_hifreq > 0) .or. (CS%id_vbt_hifreq > 0) .or. &
       (CS%id_eta_hifreq > 0) .or. (CS%id_eta_pred_hifreq > 0) .or. &
-      (CS%id_uhbt_hifreq > 0) .or. (CS%id_vhbt_hifreq > 0)) then
+      (CS%id_uhbt_hifreq > 0) .or. (CS%id_vhbt_hifreq > 0) .or. &
+      (CS%id_udrag_hifreq > 0) .or. (CS%id_uspring_hifreq > 0)) then
     do_hifreq_output = query_averaging_enabled(CS%diag, time_int_in, time_end_in)
     if (do_hifreq_output) &
       time_bt_start = time_end_in - real_to_time(US%T_to_s*dt)
@@ -2509,6 +2511,8 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
       if (CS%id_uhbt_hifreq > 0) call post_data(CS%id_uhbt_hifreq, uhbt(IsdB:IedB,jsd:jed), CS%diag)
       if (CS%id_vhbt_hifreq > 0) call post_data(CS%id_vhbt_hifreq, vhbt(isd:ied,JsdB:JedB), CS%diag)
       if (CS%id_eta_pred_hifreq > 0) call post_data(CS%id_eta_pred_hifreq, eta_PF_BT(isd:ied,jsd:jed), CS%diag)
+      if (CS%id_udrag_hifreq > 0) call post_data(CS%id_udrag_hifreq, ubt(IsdB:IedB,jsd:jed) * Rayleigh_u(IsdB:IedB,jsd:jed), CS%diag)
+      if (CS%id_uspring_hifreq > 0) call post_data(CS%id_uspring_hifreq, dubtdt(IsdB:IedB,jsd:jed) * Rayleigh_dudt(IsdB:IedB,jsd:jed), CS%diag)
     endif
 
     if (CS%debug_bt) then
@@ -5132,6 +5136,10 @@ subroutine barotropic_init(u, v, h, eta, Time, G, GV, US, param_file, diag, CS, 
   CS%id_vhbt_hifreq = register_diag_field('ocean_model', 'vhbt_hifreq', diag%axesCv1, Time, &
       'High Frequency Barotropic meridional transport', &
       'm3 s-1', conversion=GV%H_to_m*US%L_to_m*US%L_T_to_m_s)
+  CS%id_udrag_hifreq = register_diag_field('ocean_model', 'udrag_hifreq', diag%axesCu1, Time, &
+       'High frequency ubt * Rayleigh_u', 'm s-2', conversion=US%L_T2_to_m_s2)
+  CS%id_uspring_hifreq = register_diag_field('ocean_model', 'uspring_hifreq', diag%axesCu1, Time, &
+       'High frequency dubtdt * Rayleigh_dudt', 'm s-2', conversion=US%L_T2_to_m_s2)
   CS%id_frhatu = register_diag_field('ocean_model', 'frhatu', diag%axesCuL, Time, &
       'Fractional thickness of layers in u-columns', 'nondim')
   CS%id_frhatv = register_diag_field('ocean_model', 'frhatv', diag%axesCvL, Time, &
