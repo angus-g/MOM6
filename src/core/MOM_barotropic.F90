@@ -1556,27 +1556,31 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   endif
   if (CS%linear_wave_drag) then
     !$OMP do
-    do j=js,je ; do I=is-1,ie ; if (CS%lin_drag_u(I,j) > 0.0) then
+    do j=js,je ; do I=is-1,ie
       Htot = 0.5 * (eta(i,j) + eta(i+1,j))
       if (GV%Boussinesq) &
         Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i+1,j))
-      bt_rem_u(I,j) = bt_rem_u(I,j) * (Htot / (Htot + (CS%lin_drag_u(I,j) + CS%lin_drag_uv_u(I,j)) * dtbt))
+      if (CS%lin_drag_u(I,j) > 0.0) then
+        bt_rem_u(I,j) = bt_rem_u(I,j) * (Htot / (Htot + (CS%lin_drag_u(I,j) + CS%lin_drag_uv_u(I,j)) * dtbt))
 
-      Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
-      Rayleigh_uv_u(I,j) = CS%lin_drag_uv_u(I,j) / Htot
+        Rayleigh_u(I,j) = CS%lin_drag_u(I,j) / Htot
+        Rayleigh_uv_u(I,j) = CS%lin_drag_uv_u(I,j) / Htot
+      endif
       Rayleigh_dudt(I,j) = CS%lin_drag_dudt(I,j) / Htot
-    endif ; enddo ; enddo
+    enddo ; enddo
     !$OMP do
-    do J=js-1,je ; do i=is,ie ; if (CS%lin_drag_v(i,J) > 0.0) then
+    do J=js-1,je ; do i=is,ie
       Htot = 0.5 * (eta(i,j) + eta(i,j+1))
       if (GV%Boussinesq) &
         Htot = Htot + 0.5*GV%Z_to_H * (CS%bathyT(i,j) + CS%bathyT(i,j+1))
-      bt_rem_v(i,J) = bt_rem_v(i,J) * (Htot / (Htot + (CS%lin_drag_v(i,J) + CS%lin_drag_uv_v(i,J)) * dtbt))
+      if (CS%lin_drag_v(i,J) > 0.0) then
+        bt_rem_v(i,J) = bt_rem_v(i,J) * (Htot / (Htot + (CS%lin_drag_v(i,J) + CS%lin_drag_uv_v(i,J)) * dtbt))
 
-      Rayleigh_v(i,J) = CS%lin_drag_v(i,J) / Htot
-      Rayleigh_uv_v(i,J) = CS%lin_drag_uv_v(i,J) / Htot
+        Rayleigh_v(i,J) = CS%lin_drag_v(i,J) / Htot
+        Rayleigh_uv_v(i,J) = CS%lin_drag_uv_v(i,J) / Htot
+      endif
       Rayleigh_dvdt(i,J) = CS%lin_drag_dvdt(i,J) / Htot
-    endif ; enddo ; enddo
+    enddo ; enddo
   endif
 
   ! Here is an example of how the filter equations are time stepped to determine the M2 and K1 velocities.
