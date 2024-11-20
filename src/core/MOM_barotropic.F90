@@ -716,6 +716,7 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
   real :: h_neglect            ! A thickness that is so small it is usually lost
                                ! in roundoff and can be neglected [H ~> m or kg m-2].
   real :: Idtbt       ! The inverse of the barotropic time step [T-1 ~> s-1]
+  real :: tmp_denom ! A temporary variable for ensuring non-zero denominators [m2]
 
   real, allocatable :: wt_vel(:)    ! The raw or relative weights of each of the barotropic timesteps
                                     ! in determining the average velocities [nondim]
@@ -2117,20 +2118,22 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
 
         ! interpolate cross velocity terms, weight by area since it applies over a bottom boundary layer
         do j=jsv,jev ; do I=isv-1,iev
-          if (G%mask2dCu(I,j) > 0.0) then
+          tmp_denom = ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+          if (G%mask2dCu(I,j) > 0.0 .and. tmp_denom > 0.0) then
             vbt_on_u(I,j) = ( &
                  (vbt(i,J) * G%areaCv(i,J) + vbt(i+1,J-1) * G%areaCv(i+1,J-1)) + &
                  (vbt(i,J-1) * G%areaCv(i,J-1) + vbt(i+1,J) * G%areaCv(i+1,J))) / &
-                 ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+                 tmp_denom
           endif
         enddo; enddo
 
         do J=jsv-1,jev ; do i=isv-1,iev+1
-          if (G%mask2dCv(i,J) > 0.0) then
+          tmp_denom = ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+          if (G%mask2dCv(i,J) > 0.0 .and. tmp_denom > 0.0) then
             ubt_on_v(i,J) = ( &
                  (ubt(I,j) * G%areaCu(I,j) + ubt(I-1,j+1) * G%areaCu(I-1,j+1)) + &
                  (ubt(I-1,j) * G%areaCu(I-1,j) + ubt(I,j+1) * G%areaCu(I,j+1))) / &
-                 ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+                 tmp_denom
           endif
         enddo; enddo
 
@@ -2306,20 +2309,22 @@ subroutine btstep(U_in, V_in, eta_in, dt, bc_accel_u, bc_accel_v, forces, pbce, 
         ubt_on_v(:,:) = 0.
 
         do j=jsv-1,jev+1 ; do I=isv-1,iev
-          if (G%mask2dCu(I,j) > 0.0) then
+          tmp_denom = ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+          if (G%mask2dCu(I,j) > 0.0 .and. tmp_denom > 0.0) then
             vbt_on_u(I,j) = ( &
                  (vbt(i,J) * G%areaCv(i,J) + vbt(i+1,J-1) * G%areaCv(i+1,J-1)) + &
                  (vbt(i,J-1) * G%areaCv(i,J-1) + vbt(i+1,J) * G%areaCv(i+1,J))) / &
-                 ((G%areaCv(i,J) + G%areaCv(i+1,J-1)) + (G%areaCv(i,J-1) + G%areaCv(i+1,J)))
+                 tmp_denom
           endif
         enddo; enddo
 
         do J=jsv-1,jev ; do i=isv,iev
-          if (G%mask2dCv(i,J) > 0.0) then
+          tmp_denom = ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+          if (G%mask2dCv(i,J) > 0.0 .and. tmp_denom > 0.0) then
             ubt_on_v(i,J) = ( &
                  (ubt(I,j) * G%areaCu(I,j) + ubt(I-1,j+1) * G%areaCu(I-1,j+1)) + &
                  (ubt(I-1,j) * G%areaCu(I-1,j) + ubt(I,j+1) * G%areaCu(I,j+1))) / &
-                 ((G%areaCu(I,j) + G%areaCu(I-1,j+1)) + (G%areaCu(I-1,j) + G%areaCu(I,j+1)))
+                 tmp_denom
           endif
         enddo; enddo
 
