@@ -1795,7 +1795,7 @@ subroutine register_forcing_type_diags(Time, diag, US, use_temperature, handles,
       units='kg s-1', conversion=US%RZL2_to_kg*US%s_to_T)
 
   handles%id_total_net_massin = register_scalar_field('ocean_model', 'total_net_massin', Time, diag, &
-      long_name='Area integrated mass entering ocean due to predip, runoff, ice melt', &
+      long_name='Area integrated mass entering ocean due to precip, runoff, ice melt', &
       units='kg s-1', conversion=US%RZL2_to_kg*US%s_to_T)
 
   !=========================================================================
@@ -2423,6 +2423,11 @@ subroutine fluxes_accumulate(flux_tmp, fluxes, G, wt2, forces)
 
     fluxes%salt_flux(i,j) = wt1*fluxes%salt_flux(i,j) + wt2*flux_tmp%salt_flux(i,j)
   enddo ; enddo
+  if (associated(fluxes%salt_flux_added) .and. associated(flux_tmp%salt_flux_added)) then
+    do j=js,je ; do i=is,ie
+      fluxes%salt_flux_added(i,j) = wt1*fluxes%salt_flux_added(i,j) + wt2*flux_tmp%salt_flux_added(i,j)
+    enddo ; enddo
+  endif
   if (associated(fluxes%heat_added) .and. associated(flux_tmp%heat_added)) then
     do j=js,je ; do i=is,ie
       fluxes%heat_added(i,j) = wt1*fluxes%heat_added(i,j) + wt2*flux_tmp%heat_added(i,j)
