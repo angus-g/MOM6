@@ -380,6 +380,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
           "flux from the horizontal boundary diffusion scheme", trim(flux_units), &
           v_extensive=.true., &
           x_cell_method='sum', conversion=(US%L_to_m**2)*Tr%flux_scale*US%s_to_T)
+      Tr%id_numerical_mixing = register_diag_field("ocean_model", trim(shortnm)//"_numerical_mixing", &
+          diag%axesTL, Time, "Spurious mixing of "//trim(shortnm)//" due to advection", trim(Tr%units)//"^2ms-1")
     else
       Tr%id_adx = register_diag_field("ocean_model", trim(shortnm)//"_adx", &
           diag%axesCuL, Time, "Advective (by residual mean) Zonal Flux of "//trim(flux_longname), &
@@ -405,6 +407,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
           "Horizontal Boundary Diffusive Meridional Flux of "//trim(flux_longname), &
           flux_units, v_extensive=.true., conversion=(US%L_to_m**2)*Tr%flux_scale*US%s_to_T, &
           x_cell_method='sum')
+      Tr%id_numerical_mixing = register_diag_field("ocean_model", trim(shortnm)//"_numerical_mixing", &
+          diag%axesTL, Time, "Spurious mixing of "//trim(shortnm)//" due to advection", trim(Tr%units)//"^2ms-1")
     endif
     Tr%id_zint = register_diag_field("ocean_model", trim(shortnm)//"_zint", &
         diag%axesT1, Time, &
@@ -416,8 +420,8 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         trim(units) // " m")
     Tr%id_surf = register_diag_field("ocean_model", trim(shortnm)//"_SURF", &
         diag%axesT1, Time, "Surface values of "// trim(longname), trim(units))
-    if (Tr%id_adx > 0) call safe_alloc_ptr(Tr%ad_x,IsdB,IedB,jsd,jed,nz)
-    if (Tr%id_ady > 0) call safe_alloc_ptr(Tr%ad_y,isd,ied,JsdB,JedB,nz)
+    if ((Tr%id_adx > 0) .or. (Tr%id_numerical_mixing > 0)) call safe_alloc_ptr(Tr%ad_x,IsdB,IedB,jsd,jed,nz)
+    if ((Tr%id_ady > 0) .or. (Tr%id_numerical_mixing > 0)) call safe_alloc_ptr(Tr%ad_y,isd,ied,JsdB,JedB,nz)
     if (Tr%id_dfx > 0) call safe_alloc_ptr(Tr%df_x,IsdB,IedB,jsd,jed,nz)
     if (Tr%id_dfy > 0) call safe_alloc_ptr(Tr%df_y,isd,ied,JsdB,JedB,nz)
     if (Tr%id_hbd_dfx > 0) call safe_alloc_ptr(Tr%hbd_dfx,IsdB,IedB,jsd,jed,nz)
@@ -466,7 +470,7 @@ subroutine register_tracer_diagnostics(Reg, h, Time, diag, G, GV, US, use_ALE, u
         diag%axesT1, Time, &
         'Vertical sum of horizontal convergence of residual mean advective fluxes of '//&
         trim(lowercase(flux_longname)), conv_units, conversion=Tr%conv_scale*US%s_to_T)
-    if ((Tr%id_adv_xy > 0) .or. (Tr%id_adv_xy_2d > 0)) &
+    if ((Tr%id_adv_xy > 0) .or. (Tr%id_adv_xy_2d > 0) .or. (Tr%id_numerical_mixing > 0)) &
       call safe_alloc_ptr(Tr%advection_xy,isd,ied,jsd,jed,nz)
 
     Tr%id_tendency = register_diag_field('ocean_model', trim(shortnm)//'_tendency', &
