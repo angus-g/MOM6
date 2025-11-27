@@ -202,7 +202,6 @@ target_sources(mom6lib PRIVATE
   ${SRC}/diagnostics/MOM_debugging.F90
   ${SRC}/diagnostics/MOM_diagnose_KdWork.F90
   ${SRC}/diagnostics/MOM_diagnose_MLD.F90
-  ${SRC}/diagnostics/MOM_numerical_mixing.F90
   ${SRC}/diagnostics/MOM_diagnostics.F90
   ${SRC}/diagnostics/MOM_harmonic_analysis.F90
   ${SRC}/diagnostics/MOM_obsolete_diagnostics.F90
@@ -385,6 +384,7 @@ target_sources(mom6lib PRIVATE
   ${SRC}/tracer/MOM_tracer_diabatic.F90
   ${SRC}/tracer/MOM_tracer_flow_control.F90
   ${SRC}/tracer/MOM_tracer_hor_diff.F90
+  ${SRC}/tracer/MOM_tracer_numerical_mixing.F90
   ${SRC}/tracer/MOM_tracer_registry.F90
   ${SRC}/tracer/MOM_tracer_types.F90
   ${SRC}/tracer/MOM_tracer_Z_init.F90
