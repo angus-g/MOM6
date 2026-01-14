@@ -16,6 +16,44 @@ character(len=len("idealised_python")) :: mdl = "idealised_python"
 logical :: python_initialised = .false.
 
 type(c_ptr), bind(C, name="PyObject_None") :: PyObject_None
+integer(kind=c_int), bind(C, name="_NPY_FLOAT64") :: NPY_FLOAT64
+integer(kind=c_int), bind(C, name="_NPY_ARRAY_F_CONTIGUOUS") :: NPY_ARRAY_F_CONTIGUOUS
+
+interface
+   function array_shim() bind(C)
+     import :: c_int
+
+     integer(kind=c_int) :: array_shim
+   end function
+end interface
+
+interface
+   function PyArray_DATA(arr) bind(C, name="_PyArray_DATA")
+     import :: c_ptr
+
+     type(c_ptr), value, intent(in) :: arr
+     type(c_ptr) :: PyArray_DATA
+   end function
+end interface
+
+interface
+   function PyArray_DescrFromType(typenum) bind(C, name="_PyArray_DescrFromType")
+     import :: c_int, c_ptr
+
+     integer(kind=c_int), value, intent(in) :: typenum
+     type(c_ptr) :: PyArray_DescrFromType
+   end function PyArray_DescrFromType
+end interface
+
+interface
+   function PyArray_FromAny(op, dtype, min_depth, max_depth, requirements, context) bind(C, name="_PyArray_FromAny")
+     import :: c_int, c_ptr
+
+     type(c_ptr), value, intent(in) :: op, dtype, context
+     integer(kind=c_int), value, intent(in) :: min_depth, max_depth, requirements
+     type(c_ptr) :: PyArray_FromAny
+   end function PyArray_FromAny
+end interface
 
 interface
    subroutine Py_DECREF(obj) bind(C, name="Py_DecRef")
@@ -139,7 +177,7 @@ subroutine idealised_python_topography(D, G, param_file, max_depth)
        "an array of the topography depths.", fail_if_missing=.true.)
 
   call load_module(module_name, topo_mod)
-  call run_topo_func(topo_mod, topo_func, G%isd, G%ied, G%jsd, G%jed, max_depth)
+  call run_topo_func(topo_mod, topo_func, G, max_depth, D)
 end subroutine idealised_python_topography
 
 subroutine python_init()
@@ -163,6 +201,12 @@ subroutine python_init()
 
     call Py_DECREF(empty_str)
     call Py_DECREF(sys_path)
+
+    ret = array_shim()
+    if (ret < 0) then
+      call MOM_error(FATAL, "unable to import numpy api")
+    end if
+
     python_initialised = .true.
   end if
 end subroutine python_init
@@ -189,16 +233,18 @@ subroutine load_module(name, topo_mod)
   end if
 end subroutine load_module
 
-subroutine run_topo_func(topo_mod, name, isd, ied, jsd, jed, max_depth)
+subroutine run_topo_func(topo_mod, name, G, max_depth, D)
   type(c_ptr), intent(in) :: topo_mod
   character(len=*), intent(in) :: name
-  integer, intent(in) :: isd, ied, jsd, jed
+  type(dyn_horgrid_type), intent(in) :: G
   real, intent(in) :: max_depth
+  real, dimension(G%isd:G%ied,G%jsd:G%jed), intent(out) :: D
   character(kind=c_char) :: cname(len_trim(name) + 1)
   integer :: i, lv
 
-  type(c_ptr) :: ret, err, method_name
+  type(c_ptr) :: ret, err, arr, method_name, arrptr
   type(c_ptr), dimension(:), allocatable :: args
+  real, dimension(:,:), pointer :: Dptr
 
   lv = len_trim(name)
   do concurrent (i=1:lv)
@@ -210,13 +256,12 @@ subroutine run_topo_func(topo_mod, name, isd, ied, jsd, jed, max_depth)
 
   allocate(args(6))
   args(1) = topo_mod
-  args(2) = PyLong_FromLong(int(isd, kind=c_long))
-  args(3) = PyLong_FromLong(int(ied, kind=c_long))
-  args(4) = PyLong_FromLong(int(jsd, kind=c_long))
-  args(5) = PyLong_FromLong(int(jed, kind=c_long))
+  args(2) = PyLong_FromLong(int(G%isd, kind=c_long))
+  args(3) = PyLong_FromLong(int(G%ied, kind=c_long))
+  args(4) = PyLong_FromLong(int(G%jsd, kind=c_long))
+  args(5) = PyLong_FromLong(int(G%jed, kind=c_long))
   args(6) = PyFloat_FromDouble(max_depth)
 
-  ! needs argument array and kwargs...
   ret = PyObject_VectorcallMethod(method_name, args(:), int(size(args), kind=c_size_t), PyObject_None)
   call Py_INCREF(ret)
 
@@ -233,7 +278,21 @@ subroutine run_topo_func(topo_mod, name, isd, ied, jsd, jed, max_depth)
   end do
   deallocate(args)
 
-  ! convert ret to depth array
+  arr = PyArray_FromAny(ret, PyArray_DescrFromType(NPY_FLOAT64), &
+    int(2, kind=c_int), int(2, kind=c_int), NPY_ARRAY_F_CONTIGUOUS, c_null_ptr)
+  call Py_INCREF(arr)
+
+  err = PyErr_Occurred()
+  if (c_associated(err)) then
+    call PyErr_Print
+    call MOM_error(FATAL, "exception while converting topo array")
+  end if
   call Py_DECREF(ret)
+
+  arrptr = PyArray_DATA(arr)
+  call c_f_pointer(arrptr, Dptr, [G%ied-G%isd+1, G%jed-G%jsd+1])
+  D(G%isc:G%iec,G%jsc:G%jec) = Dptr(G%isc:G%iec,G%jsc:G%jec)
+
+  call Py_DECREF(arr)
 end subroutine run_topo_func
 end module idealised_python
