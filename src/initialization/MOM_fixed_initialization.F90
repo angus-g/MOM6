@@ -41,6 +41,7 @@ use dumbbell_initialization, only : dumbbell_initialize_topography
 use shelfwave_initialization, only : shelfwave_initialize_topography
 use Phillips_initialization, only : Phillips_initialize_topography
 use dense_water_initialization, only : dense_water_initialize_topography
+use idealised_python, only : idealised_python_topography
 
 implicit none ; private
 
@@ -220,6 +221,7 @@ subroutine MOM_initialize_topography(D, max_depth, G, PF, US)
                  " \t shelfwave - exponential slope for shelfwave test case.\n"//&
                  " \t Phillips - ACC-like idealized topography used in the Phillips config.\n"//&
                  " \t dense - Denmark Strait-like dense water formation and overflow.\n"//&
+                 " \t python - Initialise from Python routine.\n"//&
                  " \t USER - call a user modified routine.", &
                  fail_if_missing=.true.)
   call get_param(PF, mdl, "MAXIMUM_DEPTH", max_depth, units="m", default=-1.e9, scale=US%m_to_Z, do_not_log=.true.)
@@ -242,6 +244,7 @@ subroutine MOM_initialize_topography(D, max_depth, G, PF, US)
     case ("shelfwave"); call shelfwave_initialize_topography(D, G, PF, max_depth, US)
     case ("Phillips");  call Phillips_initialize_topography(D, G, PF, max_depth, US)
     case ("dense");     call dense_water_initialize_topography(D, G, PF, max_depth)
+    case ("python");    call idealised_python_topography(D, G, PF, max_depth)
     case ("USER");      call user_initialize_topography(D, G, PF, max_depth, US)
     case default ;      call MOM_error(FATAL,"MOM_initialize_topography: "// &
       "Unrecognized topography setup '"//trim(config)//"'")
