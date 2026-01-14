@@ -1,5 +1,7 @@
 module idealised_python
 
+use, intrinsic :: iso_c_binding
+
 use MOM_dyn_horgrid, only : dyn_horgrid_type
 use MOM_error_handler, only : FATAL, MOM_error
 use MOM_file_parser, only : get_param, param_file_type
@@ -13,9 +15,11 @@ public idealised_python_topography
 character(len=len("idealised_python")) :: mdl = "idealised_python"
 logical :: python_initialised = .false.
 
+type(c_ptr), bind(C, name="PyObject_None") :: PyObject_None
+
 interface
    subroutine Py_DECREF(obj) bind(C, name="Py_DecRef")
-     use iso_c_binding, only : c_ptr
+     import :: c_ptr
 
      type(c_ptr), value, intent(in) :: obj
    end subroutine Py_DECREF
@@ -23,7 +27,7 @@ end interface
 
 interface
    function PyErr_Occurred() bind(C, name="PyErr_Occurred")
-     use iso_c_binding, only : c_ptr
+     import :: c_ptr
 
      type(c_ptr) :: PyErr_Occurred
    end function PyErr_Occurred
@@ -35,8 +39,17 @@ interface
 end interface
 
 interface
+   function PyFloat_FromDouble(val) bind(C, name="PyFloat_FromDouble")
+     import :: c_double, c_ptr
+
+     real(kind=c_double), value, intent(in) :: val
+     type(c_ptr) :: PyFloat_FromDouble
+  end function PyFloat_FromDouble
+end interface
+
+interface
    function PyImport_ImportModule(name) bind(C, name="PyImport_ImportModule")
-     use iso_c_binding, only : c_char, c_ptr
+     import :: c_char, c_ptr
 
      character(kind=c_char), intent(in) :: name(*)
      type(c_ptr) :: PyImport_ImportModule
@@ -45,7 +58,7 @@ end interface
 
 interface
    subroutine Py_INCREF(obj) bind(C, name="Py_IncRef")
-     use iso_c_binding, only : c_ptr
+     import :: c_ptr
 
      type(c_ptr), value, intent(in) :: obj
    end subroutine Py_INCREF
@@ -58,7 +71,7 @@ end interface
 
 interface
    function PyList_Insert(list, index, obj) bind(C, name="PyList_Insert")
-     use iso_c_binding, only : c_int, c_ptr, c_size_t
+     import :: c_int, c_ptr, c_size_t
 
      type(c_ptr), value, intent(in) :: list
      integer(kind=c_size_t), value, intent(in) :: index
@@ -68,12 +81,21 @@ interface
 end interface
 
 interface
-   function PyObject_VectorcallMethod(obj, name, nargs, kwnames) bind(C, name="PyObject_VectorcallMethod")
-     use iso_c_binding, only : c_char, c_ptr, c_size_t
+   function PyLong_FromLong(val) bind(C, name="PyLong_FromLong")
+     import :: c_long, c_ptr
 
-     type(c_ptr), value, intent(in) :: obj
-     character(kind=c_char), intent(in) :: name(*)
+     integer(kind=c_long), value, intent(in) :: val
+     type(c_ptr) :: PyLong_FromLong
+   end function PyLong_FromLong
+end interface
+
+interface
+   function PyObject_VectorcallMethod(name, args, nargs, kwnames) bind(C, name="PyObject_VectorcallMethod")
+     import :: c_ptr, c_size_t
+
+     type(c_ptr), value, intent(in) :: name
      integer(kind=c_size_t), value, intent(in) :: nargs
+     type(c_ptr), dimension(nargs), intent(in) :: args
      type(c_ptr), value, intent(in) :: kwnames
      type(c_ptr) :: PyObject_VectorcallMethod
    end function PyObject_VectorcallMethod
@@ -81,7 +103,7 @@ end interface
 
 interface
    function PySys_GetObject(name) bind(C, name="PySys_GetObject")
-     use iso_c_binding, only : c_char, c_ptr
+     import :: c_char, c_ptr
 
      character(kind=c_char), intent(in) :: name(*)
      type(c_ptr) :: PySys_GetObject
@@ -90,7 +112,7 @@ end interface
 
 interface
    function PyUnicode_FromString(str) bind(C, name="PyUnicode_FromString")
-     use iso_c_binding, only : c_char, c_ptr
+     import :: c_char, c_ptr
 
      character(kind=c_char), intent(in) :: str(*)
      type(c_ptr) :: PyUnicode_FromString
@@ -100,8 +122,6 @@ end interface
 contains
 
 subroutine idealised_python_topography(D, G, param_file, max_depth)
-  use iso_c_binding, only : c_ptr
-
   type(dyn_horgrid_type), intent(in) :: G
   real, dimension(G%isd:G%ied,G%jsd:G%jed), intent(out) :: D
   type(param_file_type), intent(in) :: param_file
@@ -123,8 +143,6 @@ subroutine idealised_python_topography(D, G, param_file, max_depth)
 end subroutine idealised_python_topography
 
 subroutine python_init()
-  use iso_c_binding, only : c_associated, c_char, c_int, c_null_char, c_ptr, c_size_t, c_intptr_t
-
   integer(kind=c_int) :: ret
   integer(kind=c_size_t) :: index = 0
   type(c_ptr) :: empty_str, sys_path
@@ -149,11 +167,9 @@ subroutine python_init()
   end if
 end subroutine python_init
 
-subroutine load_module(name, mod)
-  use iso_c_binding, only : c_associated, c_char, c_null_char, c_ptr
-
+subroutine load_module(name, topo_mod)
   character(len=*), intent(in) :: name
-  type(c_ptr), intent(out) :: mod
+  type(c_ptr), intent(out) :: topo_mod
   character(kind=c_char) :: cname(len_trim(name) + 1)
   integer :: i, lv
   type(c_ptr) :: err
@@ -164,7 +180,7 @@ subroutine load_module(name, mod)
   end do
   cname(lv+1) = c_null_char
 
-  mod = PyImport_ImportModule(cname)
+  topo_mod = PyImport_ImportModule(cname)
   err = PyErr_Occurred()
 
   if (c_associated(err)) then
@@ -173,17 +189,16 @@ subroutine load_module(name, mod)
   end if
 end subroutine load_module
 
-subroutine run_topo_func(mod, name, isd, ied, jsd, jed, max_depth)
-  use iso_c_binding, only : c_char, c_null_char, c_ptr
-
-  type(c_ptr), intent(in) :: mod
+subroutine run_topo_func(topo_mod, name, isd, ied, jsd, jed, max_depth)
+  type(c_ptr), intent(in) :: topo_mod
   character(len=*), intent(in) :: name
   integer, intent(in) :: isd, ied, jsd, jed
   real, intent(in) :: max_depth
   character(kind=c_char) :: cname(len_trim(name) + 1)
   integer :: i, lv
 
-  type(c_ptr) :: ret, err
+  type(c_ptr) :: ret, err, method_name
+  type(c_ptr), dimension(:), allocatable :: args
 
   lv = len_trim(name)
   do concurrent (i=1:lv)
@@ -191,7 +206,34 @@ subroutine run_topo_func(mod, name, isd, ied, jsd, jed, max_depth)
   end do
   cname(lv+1) = c_null_char
 
+  method_name = PyUnicode_FromString(cname)
+
+  allocate(args(6))
+  args(1) = topo_mod
+  args(2) = PyLong_FromLong(int(isd, kind=c_long))
+  args(3) = PyLong_FromLong(int(ied, kind=c_long))
+  args(4) = PyLong_FromLong(int(jsd, kind=c_long))
+  args(5) = PyLong_FromLong(int(jed, kind=c_long))
+  args(6) = PyFloat_FromDouble(max_depth)
+
   ! needs argument array and kwargs...
-  ret = PyObject_VectorcallMethod(mod, cname, int(0, kind=c_size_t), 
+  ret = PyObject_VectorcallMethod(method_name, args(:), int(size(args), kind=c_size_t), PyObject_None)
+  call Py_INCREF(ret)
+
+  err = PyErr_Occurred()
+  if (c_associated(err)) then
+    call PyErr_Print
+    call MOM_error(FATAL, "python interface raised exception")
+  end if
+
+  call Py_DECREF(method_name)
+
+  do i = 2, size(args)
+    call Py_DECREF(args(i))
+  end do
+  deallocate(args)
+
+  ! convert ret to depth array
+  call Py_DECREF(ret)
 end subroutine run_topo_func
 end module idealised_python
