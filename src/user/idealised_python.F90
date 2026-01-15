@@ -5,12 +5,14 @@ use, intrinsic :: iso_c_binding
 use MOM_dyn_horgrid, only : dyn_horgrid_type
 use MOM_error_handler, only : FATAL, MOM_error
 use MOM_file_parser, only : get_param, param_file_type
+use MOM_grid, only : ocean_grid_type
+use MOM_verticalGrid, only : verticalGrid_type
 
 implicit none ; private
 
 #include <MOM_memory.h>
 
-public idealised_python_topography
+public idealised_python_topography, idealised_python_velocity
 
 character(len=len("idealised_python")) :: mdl = "idealised_python"
 logical :: python_initialised = .false.
@@ -149,6 +151,35 @@ interface
 end interface
 
 interface
+   function PyTuple_GetItem(p, pos) bind(C, name="PyTuple_GetItem")
+     import :: c_ptr, c_size_t
+
+     type(c_ptr), value, intent(in) :: p
+     integer(kind=c_size_t), value, intent(in) :: pos
+     type(c_ptr) :: PyTuple_GetItem
+   end function PyTuple_GetItem
+end interface
+
+interface
+   function PyTuple_New(len) bind(C, name="PyTuple_New")
+     import :: c_ptr, c_size_t
+
+     integer(kind=c_size_t), value, intent(in) :: len
+     type(c_ptr) :: PyTuple_New
+   end function PyTuple_New
+end interface
+
+interface
+   function PyTuple_SetItem(p, pos, o) bind(C, name="PyTuple_SetItem")
+     import :: c_int, c_ptr, c_size_t
+
+     type(c_ptr), value, intent(in) :: p, o
+     integer(kind=c_size_t), value, intent(in) :: pos
+     integer(kind=c_int) :: PyTuple_SetItem
+   end function PyTuple_SetItem
+end interface
+
+interface
    function PyUnicode_FromString(str) bind(C, name="PyUnicode_FromString")
      import :: c_char, c_ptr
 
@@ -178,7 +209,34 @@ subroutine idealised_python_topography(D, G, param_file, max_depth)
 
   call load_module(module_name, topo_mod)
   call run_topo_func(topo_mod, topo_func, G, max_depth, D)
+  call unload_module(topo_mod)
 end subroutine idealised_python_topography
+
+subroutine idealised_python_velocity(u, v, G, GV, param_file, just_read)
+  type(ocean_grid_type), intent(in) :: G
+  type(verticalGrid_type), intent(in) :: GV
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(out) :: u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(out) :: v
+  type(param_file_type), intent(in) :: param_file
+  logical, intent(in) :: just_read
+
+  character(len=20) :: module_name, velocity_func
+  type(c_ptr) :: velocity_mod
+
+  if (just_read) return
+
+  call python_init
+
+  call get_param(param_file, mdl, "PYTHON_VELOCITY_MODULE", module_name, &
+       "Python module containing velocity definition function", fail_if_missing=.true.)
+  call get_param(param_file, mdl, "PYTHON_VELOCITY_FUNC", velocity_func, &
+       "Python function f(isd, ied, jsd, jed, max_depth) returning\n"//&
+       "an array of the topography depths.", fail_if_missing=.true.)
+
+  call load_module(module_name, velocity_mod)
+  call run_velocity_func(velocity_mod, velocity_func, G, GV, u, v)
+  call unload_module(velocity_mod)
+end subroutine idealised_python_velocity
 
 subroutine python_init()
   integer(kind=c_int) :: ret
@@ -232,6 +290,12 @@ subroutine load_module(name, topo_mod)
     call MOM_error(FATAL, "python interface raised exception")
   end if
 end subroutine load_module
+
+subroutine unload_module(py_mod)
+  type(c_ptr), intent(in) :: py_mod
+
+  call Py_DECREF(py_mod)
+end subroutine unload_module
 
 subroutine run_topo_func(topo_mod, name, G, max_depth, D)
   type(c_ptr), intent(in) :: topo_mod
@@ -287,12 +351,113 @@ subroutine run_topo_func(topo_mod, name, G, max_depth, D)
     call PyErr_Print
     call MOM_error(FATAL, "exception while converting topo array")
   end if
-  call Py_DECREF(ret)
 
   arrptr = PyArray_DATA(arr)
   call c_f_pointer(arrptr, Dptr, [G%ied-G%isd+1, G%jed-G%jsd+1])
   D(G%isc:G%iec,G%jsc:G%jec) = Dptr(G%isc:G%iec,G%jsc:G%jec)
 
   call Py_DECREF(arr)
+  call Py_DECREF(ret)
 end subroutine run_topo_func
+
+subroutine run_velocity_func(velocity_mod, name, G, GV, u, v)
+  type(c_ptr), intent(in) :: velocity_mod
+  character(len=*), intent(in) :: name
+  type(ocean_grid_type), intent(in) :: G
+  type(verticalGrid_type), intent(in) :: GV
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(out) :: u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(out) :: v
+
+  character(kind=c_char) :: cname(len_trim(name) + 1)
+  integer :: i, lv, iret
+
+  type(c_ptr) :: ret, err, arr, method_name, arrptr
+  type(c_ptr), dimension(:), allocatable :: args
+  real, dimension(:,:,:), pointer :: uptr, vptr
+  integer, dimension(4) :: bounds
+
+  lv = len_trim(name)
+  do concurrent (i=1:lv)
+    cname(i) = name(i:i)
+  end do
+  cname(lv+1) = c_null_char
+
+  method_name = PyUnicode_FromString(cname)
+
+  allocate(args(4))
+  args(1) = velocity_mod
+  args(2) = PyTuple_New(int(4, kind=c_size_t))
+  args(3) = PyTuple_New(int(4, kind=c_size_t))
+
+  bounds = [G%IsdB, G%IedB, G%jsd, G%jed]
+  do i = 1, 4
+    iret = PyTuple_SetItem(args(2), int(i-1, kind=c_size_t), &
+         PyLong_FromLong(int(bounds(i), kind=c_long)))
+    if (iret /= 0) call MOM_error(FATAL, "error setting u dim tuple")
+  end do
+
+  bounds = [G%isd, G%ied, G%JsdB, G%JedB]
+  do i = 1, 4
+    iret = PyTuple_SetItem(args(3), int(i-1, kind=c_size_t), &
+         PyLong_FromLong(int(bounds(i), kind=c_long)))
+    if (iret /= 0) call MOM_error(FATAL, "error setting v dim tuple")
+  end do
+
+  args(4) = PyLong_FromLong(int(GV%ke, kind=c_long))
+
+  ret = PyObject_VectorcallMethod(method_name, args(:), int(size(args), kind=c_size_t), PyObject_None)
+  call Py_INCREF(ret)
+
+  err = PyErr_Occurred()
+  if (c_associated(err)) then
+    call PyErr_Print
+    call MOM_error(FATAL, "python interface raised exception")
+  end if
+
+  call Py_DECREF(method_name)
+
+  do i = 2, size(args)
+    call Py_DECREF(args(i))
+  end do
+  deallocate(args)
+
+  ! extract u array
+  arr = PyTuple_GetItem(ret, int(0, kind=c_size_t))
+  arr = PyArray_FromAny(arr, PyArray_DescrFromType(NPY_FLOAT64), &
+       int(3, kind=c_int), int(3, kind=c_int), NPY_ARRAY_F_CONTIGUOUS, c_null_ptr)
+  call Py_INCREF(arr)
+
+  err = PyErr_Occurred()
+  if (c_associated(err)) then
+    call PyErr_Print
+    call MOM_error(FATAL, "exception while converting u array")
+  end if
+
+  arrptr = PyArray_DATA(arr)
+  call c_f_pointer(arrptr, uptr, [G%IedB-G%IsdB+1, G%jed-G%jsd+1, GV%ke])
+  u(:,:,:) = uptr(:,:,:)
+  call Py_DECREF(arr)
+  uptr => null()
+
+  ! extract v array
+  arr = PyTuple_GetItem(ret, int(1, kind=c_size_t))
+  arr = PyArray_FromAny(arr, PyArray_DescrFromType(NPY_FLOAT64), &
+       int(3, kind=c_int), int(3, kind=c_int), NPY_ARRAY_F_CONTIGUOUS, c_null_ptr)
+  call Py_INCREF(arr)
+
+  err = PyErr_Occurred()
+  if (c_associated(err)) then
+    call PyErr_Print
+    call MOM_error(FATAL, "exception while converting v array")
+  end if
+
+  arrptr = PyArray_DATA(arr)
+  call c_f_pointer(arrptr, vptr, [G%ied-G%isd+1, G%JedB-G%JsdB+1, GV%ke])
+  v(:,:,:) = vptr(:,:,:)
+  call Py_DECREF(arr)
+
+  vptr => null()
+
+  call Py_DECREF(ret)
+end subroutine run_velocity_func
 end module idealised_python

@@ -93,6 +93,7 @@ use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer, homogenize
 use MOM_oda_incupd, only: oda_incupd_CS, initialize_oda_incupd_fixed, initialize_oda_incupd
 use MOM_oda_incupd, only: set_up_oda_incupd_field, set_up_oda_incupd_vel_field
 use MOM_oda_incupd, only: calc_oda_increments, output_oda_incupd_inc
+use idealised_python, only : idealised_python_velocity
 
 implicit none ; private
 
@@ -528,6 +529,7 @@ subroutine MOM_initialize_state(u, v, h, tv, Time, G, GV, US, PF, dirs, &
     case ("rossby_front"); call Rossby_front_initialize_velocity(u, v, h, &
                                      G, GV, US, PF, just_read)
     case ("soliton"); call soliton_initialize_velocity(u, v, G, GV, US, PF, just_read)
+    case ("python"); call idealised_python_velocity(u, v, G, GV, PF, just_read)
     case ("USER"); call user_initialize_velocity(u, v, G, GV, US, PF, just_read)
     case default ; call MOM_error(FATAL,  "MOM_initialize_state: "//&
           "Unrecognized velocity configuration "//trim(config))
