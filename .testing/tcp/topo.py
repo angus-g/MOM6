@@ -26,3 +26,13 @@ def vel(udims, vdims, nz):
     print(f"velocity shapes: {u.shape}, {v.shape}, {u.dtype}, {v.dtype}", file=sys.stderr)
 
     return u, v
+
+def ts(isd, ied, jsd, jed, nz):
+    print("Hello world from topo.ts()", file=sys.stderr)
+
+    T = np.empty((ied-isd+1, jed-jsd+1, nz))
+    T[:] = 20.0
+    S = np.empty((ied-isd+1, jed-jsd+1, nz))
+    S[:] = 35.0
+
+    return T, S
