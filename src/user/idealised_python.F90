@@ -27,27 +27,18 @@ interface
 
      integer(kind=c_int) :: array_shim
    end function
-end interface
-
-interface
    function PyArray_DATA(arr) bind(C, name="_PyArray_DATA")
      import :: c_ptr
 
      type(c_ptr), value, intent(in) :: arr
      type(c_ptr) :: PyArray_DATA
    end function
-end interface
-
-interface
    function PyArray_DescrFromType(typenum) bind(C, name="_PyArray_DescrFromType")
      import :: c_int, c_ptr
 
      integer(kind=c_int), value, intent(in) :: typenum
      type(c_ptr) :: PyArray_DescrFromType
    end function PyArray_DescrFromType
-end interface
-
-interface
    function PyArray_FromAny(op, dtype, min_depth, max_depth, requirements, context) bind(C, name="_PyArray_FromAny")
      import :: c_int, c_ptr
 
@@ -55,61 +46,37 @@ interface
      integer(kind=c_int), value, intent(in) :: min_depth, max_depth, requirements
      type(c_ptr) :: PyArray_FromAny
    end function PyArray_FromAny
-end interface
-
-interface
    subroutine Py_DECREF(obj) bind(C, name="Py_DecRef")
      import :: c_ptr
 
      type(c_ptr), value, intent(in) :: obj
    end subroutine Py_DECREF
-end interface
-
-interface
    function PyErr_Occurred() bind(C, name="PyErr_Occurred")
      import :: c_ptr
 
      type(c_ptr) :: PyErr_Occurred
    end function PyErr_Occurred
-end interface
-
-interface
    subroutine PyErr_Print() bind(C, name="PyErr_Print")
    end subroutine PyErr_Print
-end interface
-
-interface
    function PyFloat_FromDouble(val) bind(C, name="PyFloat_FromDouble")
      import :: c_double, c_ptr
 
      real(kind=c_double), value, intent(in) :: val
      type(c_ptr) :: PyFloat_FromDouble
   end function PyFloat_FromDouble
-end interface
-
-interface
    function PyImport_Import(name) bind(C, name="PyImport_Import")
      import :: c_ptr
 
      type(c_ptr), value, intent(in) :: name
      type(c_ptr) :: PyImport_Import
    end function PyImport_Import
-end interface
-
-interface
    subroutine Py_INCREF(obj) bind(C, name="Py_IncRef")
      import :: c_ptr
 
      type(c_ptr), value, intent(in) :: obj
    end subroutine Py_INCREF
-end interface
-
-interface
    subroutine Py_Initialize() bind(C, name="Py_Initialize")
    end subroutine Py_Initialize
-end interface
-
-interface
    function PyList_Insert(list, index, obj) bind(C, name="PyList_Insert")
      import :: c_int, c_ptr, c_size_t
 
@@ -118,18 +85,12 @@ interface
      type(c_ptr), value, intent(in) :: obj
      integer(kind=c_int) :: PyList_Insert
    end function PyList_Insert
-end interface
-
-interface
    function PyLong_FromLong(val) bind(C, name="PyLong_FromLong")
      import :: c_long, c_ptr
 
      integer(kind=c_long), value, intent(in) :: val
      type(c_ptr) :: PyLong_FromLong
    end function PyLong_FromLong
-end interface
-
-interface
    function PyObject_VectorcallMethod(name, args, nargs, kwnames) bind(C, name="PyObject_VectorcallMethod")
      import :: c_ptr, c_size_t
 
@@ -139,18 +100,12 @@ interface
      type(c_ptr), value, intent(in) :: kwnames
      type(c_ptr) :: PyObject_VectorcallMethod
    end function PyObject_VectorcallMethod
-end interface
-
-interface
    function PySys_GetObject(name) bind(C, name="PySys_GetObject")
      import :: c_char, c_ptr
 
      character(kind=c_char), intent(in) :: name(*)
      type(c_ptr) :: PySys_GetObject
    end function PySys_GetObject
-end interface
-
-interface
    function PyTuple_GetItem(p, pos) bind(C, name="PyTuple_GetItem")
      import :: c_ptr, c_size_t
 
@@ -158,18 +113,12 @@ interface
      integer(kind=c_size_t), value, intent(in) :: pos
      type(c_ptr) :: PyTuple_GetItem
    end function PyTuple_GetItem
-end interface
-
-interface
    function PyTuple_New(len) bind(C, name="PyTuple_New")
      import :: c_ptr, c_size_t
 
      integer(kind=c_size_t), value, intent(in) :: len
      type(c_ptr) :: PyTuple_New
    end function PyTuple_New
-end interface
-
-interface
    function PyTuple_SetItem(p, pos, o) bind(C, name="PyTuple_SetItem")
      import :: c_int, c_ptr, c_size_t
 
@@ -177,9 +126,6 @@ interface
      integer(kind=c_size_t), value, intent(in) :: pos
      integer(kind=c_int) :: PyTuple_SetItem
    end function PyTuple_SetItem
-end interface
-
-interface
    function PyUnicode_FromString(str) bind(C, name="PyUnicode_FromString")
      import :: c_char, c_ptr
 
