@@ -71,6 +71,8 @@ type, public :: PressureForce_FV_CS ; private
   integer :: id_rho_pgf = -1 !< Diagnostic identifier
   integer :: id_rho_stanley_pgf = -1 !< Diagnostic identifier
   integer :: id_p_stanley = -1 !< Diagnostic identifier
+  integer :: id_form_x = -1 !< Diagnostic identifier
+  integer :: id_form_y = -1 !< Diagnostic identifier
   type(SAL_CS), pointer :: SAL_CSp => NULL() !< SAL control structure
   type(tidal_forcing_CS), pointer :: tides_CSp => NULL() !< Tides control structure
 end type PressureForce_FV_CS
@@ -503,11 +505,13 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, p_atm
   real, dimension(SZIB_(G),SZJ_(G)) :: &
     intx_pa, &  ! The zonal integral of the pressure anomaly along the interface
                 ! atop a layer, divided by the grid spacing [R L2 T-2 ~> Pa].
-    intx_dpa    ! The change in intx_pa through a layer [R L2 T-2 ~> Pa].
+    intx_dpa, & ! The change in intx_pa through a layer [R L2 T-2 ~> Pa].
+    form_stress_x
   real, dimension(SZI_(G),SZJB_(G)) :: &
     inty_pa, &  ! The meridional integral of the pressure anomaly along the
                 ! interface atop a layer, divided by the grid spacing [R L2 T-2 ~> Pa].
-    inty_dpa    ! The change in inty_pa through a layer [R L2 T-2 ~> Pa].
+    inty_dpa, & ! The change in inty_pa through a layer [R L2 T-2 ~> Pa].
+    form_stress_y
 
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), target :: &
     T_tmp, &    ! Temporary array of temperatures where layers that are lighter
@@ -816,6 +820,13 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, p_atm
     enddo ; enddo
   enddo
 
+  do j=js,je ; do I=Isq,Ieq
+    form_stress_x(I,j) = (e(i+1,j,nz+1) - e(i,j,nz+1)) * intx_pa(I,j) * G%IdxCu(I,j)
+  enddo ; enddo
+  do J=Jsq,Jeq ; do i=is,ie
+    form_stress_y(i,J) = (e(i,j+1,nz+1) - e(i,j,nz+1)) * inty_pa(i,J) * G%IdyCv(i,J)
+  enddo ; enddo
+
   if (CS%GFS_scale < 1.0) then
     do k=1,nz
       !$OMP parallel do default(shared)
@@ -915,6 +926,8 @@ subroutine PressureForce_FV_Bouss(h, tv, PFu, PFv, G, GV, US, CS, ALE_CSp, p_atm
   if (CS%id_rho_pgf>0) call post_data(CS%id_rho_pgf, rho_pgf, CS%diag)
   if (CS%id_rho_stanley_pgf>0) call post_data(CS%id_rho_stanley_pgf, rho_stanley_pgf, CS%diag)
   if (CS%id_p_stanley>0) call post_data(CS%id_p_stanley, p_stanley, CS%diag)
+  if (CS%id_form_x>0) call post_data(CS%id_form_x, form_stress_x, CS%diag)
+  if (CS%id_form_y>0) call post_data(CS%id_form_y, form_stress_y, CS%diag)
 
 end subroutine PressureForce_FV_Bouss
 
@@ -1023,6 +1036,11 @@ subroutine PressureForce_FV_init(Time, G, GV, US, param_file, diag, CS, SAL_CSp,
     CS%id_e_tide_sal = register_diag_field('ocean_model', 'e_tide_sal', diag%axesT1, Time, &
         'Read-in tidal self-attraction and loading height anomaly', 'meter', conversion=US%Z_to_m)
   endif
+
+  CS%id_form_x = register_diag_field('ocean_model', 'form_stress_x', diag%axesCu1, Time, &
+       'X direction form stress', 'Pa', conversion=US%RL2_T2_to_Pa)
+  CS%id_form_y = register_diag_field('ocean_model', 'form_stress_y', diag%axesCv1, Time, &
+       'Y direction form stress', 'Pa', conversion=US%RL2_T2_to_Pa)
 
   CS%GFS_scale = 1.0
   if (GV%g_prime(1) /= GV%g_Earth) CS%GFS_scale = GV%g_prime(1) / GV%g_Earth
