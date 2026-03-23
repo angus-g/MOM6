@@ -2280,8 +2280,9 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                              ! parameter in the denominator of some expressions [nondim]
   real    :: Chan_max_thick_dflt ! The default value for CHANNEL_DRAG_MAX_THICK [Z ~> m]
   real :: scalar_cdrag
+  real :: wave_drag_scale
 
-  integer :: i, j, k, is, ie, js, je
+  integer :: i, j, k, is, ie, js, je, IscB, IecB, JscB, JecB
   integer :: isd, ied, jsd, jed, IsdB, IedB, JsdB, JedB, nz
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
   logical :: adiabatic, use_omega, MLE_use_PBL_MLD
@@ -2301,12 +2302,13 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
   CS%OBC => OBC
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
+  IscB = G%IscB ; IecB = G%IecB ; JscB = G%JscB ; JecB = G%JecB
   isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed ; nz = GV%ke
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
   ALLOC_(CS%cdrag(isd:ied, jsd:jed))
-  ALLOC_(CS%cdrag_wave_u(G%IsdB:G%IedB, jsd:jed))
-  ALLOC_(CS%cdrag_wave_v(isd:ied, G%JsdB:G%JedB))
+  ALLOC_(CS%cdrag_wave_u(IsdB:IedB, jsd:jed))
+  ALLOC_(CS%cdrag_wave_v(isd:ied, JsdB:JedB))
 
   CS%diag => diag
 
@@ -2419,6 +2421,9 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
        "the linear wave drag.", &
        units="m", scale=US%m_to_Z, default=CS%dz_bbl, do_not_log=.not.CS%wavedraglaw)
   if (CS%wavedraglaw) then
+    call get_param(param_file, mdl, "CDRAG_WAVE_SCALE", wave_drag_scale, &
+         "A scaling factor for the baroclinic wave drag term.", &
+         default=1.0, units="nondim")
     call get_param(param_file, mdl, "CDRAG_WAVE_FILE", cdrag_file, &
          "The name of the file with the spatially-varying wave drag coefficient.", &
          default="")
@@ -2431,6 +2436,9 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
     CS%cdrag_wave_u(:,:) = 0.0
     call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag_wave_u, G%Domain, &
          position=EAST_FACE)
+    do j=js,je ; do I=IscB,IecB
+      CS%cdrag_wave_u(I,j) = wave_drag_scale * CS%cdrag_wave_u(I,j)
+    end do ; end do
     call pass_var(CS%cdrag_wave_u, G%domain, position=EAST_FACE)
 
     call get_param(param_file, mdl, "CDRAG_WAVE_V_VAR", cdrag_var, &
@@ -2439,6 +2447,9 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
     CS%cdrag_wave_v(:,:) = 0.0
     call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag_wave_v, G%Domain, &
          position=NORTH_FACE)
+    do J=JscB,JscB ; do i=is,ie
+      CS%cdrag_wave_v(i,J) = wave_drag_scale * CS%cdrag_wave_v(i,J)
+    end do ; end do
     call pass_var(CS%cdrag_wave_v, G%domain, position=NORTH_FACE)
   endif
   if (CS%bottomdraglaw) then
