@@ -48,10 +48,13 @@ type, public :: set_visc_CS ; private
   logical :: initialized = .false. !< True if this control structure has been initialized.
   real    :: Hbbl           !< The static bottom boundary layer thickness [H ~> m or kg m-2].
                             !! Runtime parameter `HBBL`.
+  real    :: Hbbl_wave      !< The static bottom boundary layout thickness for wave drag [H -> m or kg m-2].
   real    :: dz_bbl         !< The static bottom boundary layer thickness in height units [Z ~> m].
-                            !! Runtime parameter `HBBL`.
+  !! Runtime parameter `HBBL`.
+  real :: dz_bbl_wave
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_)    :: cdrag          !< The quadratic drag coefficient [nondim].
                             !! Runtime parameter `CDRAG`.
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_)  :: cdrag_wave !< The linear wave drag coefficient [nondim].
   real    :: c_Smag         !< The Laplacian Smagorinsky coefficient for
                             !! calculating the drag in channels [nondim].
   real    :: drag_bg_vel    !< An assumed unresolved background velocity for
@@ -71,6 +74,8 @@ type, public :: set_visc_CS ; private
                             !! actual velocity in the bottommost `HBBL`, depending
                             !! on whether linear_drag is true.
                             !! Runtime parameter `BOTTOMDRAGLAW`.
+  logical :: wavedraglaw    !< If true, an additional body force is applied over a fixed distance
+                            !! from the bottom, corresponding to cdrag_wave * u
   logical :: body_force_drag !< If true, the bottom stress is imposed as an explicit body force
                             !! applied over a fixed distance from the bottom, rather than as an
                             !! implicit calculation based on an enhanced near-bottom viscosity.
@@ -158,7 +163,9 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
                 ! layer with salinity [R S-1 ~> kg m-3 ppt-1].
     press, &    !   The pressure at which dR_dT and dR_dS are evaluated [R L2 T-2 ~> Pa].
     umag_avg, & ! The average magnitude of velocities in the bottom boundary layer [L T-1 ~> m s-1].
+    umag_lin, & ! The linear velocity magnitude [L T-1 ~> m s-1].
     h_bbl_drag, & ! The thickness over which to apply drag as a body force [H ~> m or kg m-2].
+    h_bbl_wave, &
     dz_bbl_drag   ! The vertical height over which to apply drag as a body force [Z ~> m].
   real :: htot      ! Sum of the layer thicknesses up to some point [H ~> m or kg m-2].
   real :: dztot     ! Distance from the bottom up to some point [Z ~> m].
@@ -203,6 +210,7 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
                            ! from m to thickness units [H R ~> kg m-2 or kg2 m-5].
   real, dimension(SZI_(G),SZJ_(G)) :: cdrag_sqrt       ! Square root of the drag coefficient [nondim].
   real :: cdrag_interp ! Locally-interpolated cdrag
+  real :: cdrag_interp_wave
   real :: cdrag_conv       ! The drag coeffient times a combination of static conversion factors and in
                            ! situ density or Boussinesq reference density [H L-1 ~> nondim or kg m-3]
   real :: oldfn            ! The integrated energy required to
@@ -680,6 +688,36 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         do i=is,ie ; ustar(i) = 0.5 * (cdrag_sqrt(I,j) + cdrag_sqrt(I+1,j))*CS%drag_bg_vel ; enddo
       endif
     endif ! Not linear_drag
+
+    if (CS%wavedraglaw) then
+      do i=is,ie ; if (do_i(i)) then
+        htot_vel = 0.0 ; hwtot = 0.0 ; hutot = 0.0
+
+        do k=nz,1,-1
+          if (htot_vel >= CS%Hbbl_wave) exit
+          hweight = min(CS%Hbbl_wave - htot_vel, h_at_vel(i,k))
+          if (hweight < 1.5*GV%Angstrom_H + h_neglect) cycle
+          htot_vel = htot_vel + h_at_vel(i,k)
+          hwtot = hwtot + hweight
+
+          if (m == 1) then
+            hutot = hutot + hweight * abs(u(I,j,k))
+          else
+            hutot = hutot + hweight * abs(v(i,J,k))
+          end if
+        end do
+
+        if (m == 1) then
+          cdrag_interp_wave = 0.5 * (CS%cdrag_wave(i,j) + CS%cdrag_wave(i+1,j))
+        else
+          cdrag_interp_wave = 0.5 * (CS%cdrag_wave(i,j) + CS%cdrag_wave(i,j+1))
+        end if
+
+        I_hwtot = 0.0 ; if (hwtot > 0.0) I_hwtot = 1.0 / hwtot
+        umag_lin(i) = hutot * I_hwtot
+        h_bbl_wave(i) = hwtot
+      end if ; end do
+    end if
 
     if (use_BBL_EOS) then
       if (associated(tv%p_surf)) then
@@ -1160,7 +1198,24 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         enddo
         ! Do not enhance the near-bottom viscosity in this case.
         Kv_bbl = CS%Kv_BBL_min
-      endif ; endif
+      endif; endif
+
+      if (CS%wavedraglaw) then ; if (h_bbl_wave(i) > 0.0) then
+        h_sum = 0.0
+        I_hwtot = 1.0 / h_bbl_wave(i)
+        do k=nz,1,-1
+          h_bbl_fr = min(h_bbl_wave(i) - h_sum, h_at_vel(i,k)) * I_hwtot
+          cdrag_conv = cdrag_interp_wave * US%L_to_m * GV%m_to_H
+          if (m == 1) then
+            visc%Ray_u(I,j,k) = visc%Ray_u(I,j,k) + (cdrag_conv * umag_lin(I)) * h_bbl_fr
+          else
+            visc%Ray_v(i,J,k) = visc%Ray_v(i,J,k) + (cdrag_conv * umag_lin(i)) * h_bbl_fr
+          end if
+          h_sum = h_sum + h_at_vel(i,k)
+          if (h_sum >= h_bbl_wave(i)) exit
+        end do
+        Kv_bbl = CS%Kv_BBL_min
+      end if ; end if
 
       kv_bbl = max(CS%Kv_BBL_min, kv_bbl)
       if (m==1) then
@@ -2255,6 +2310,7 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
   ALLOC_(CS%cdrag(isd:ied, jsd:jed))
+  ALLOC_(CS%cdrag_wave(isd:ied, jsd:jed))
 
   CS%diag => diag
 
@@ -2284,6 +2340,10 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                  "implicit calculation based on an enhanced near-bottom viscosity. "//&
                  "The thickness of the bottom boundary layer is HBBL.", &
                  default=.false., do_not_log=.not.CS%bottomdraglaw)
+  call get_param(param_file, mdl, "LINEAR_WAVE_DRAG", CS%wavedraglaw, &
+       "If true, a bottom stress due to linear wave drag is imposed as "//&
+       "an explicit body force, applied over a fixed distance from the bottom.", &
+       default=.false., do_not_log=.not.CS%bottomdraglaw)
   call get_param(param_file, mdl, "CHANNEL_DRAG", CS%Channel_drag, &
                  "If true, the bottom drag is exerted directly on each "//&
                  "layer proportional to the fraction of the bottom it "//&
@@ -2358,6 +2418,23 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                  "near-bottom velocities are averaged for the drag law if BOTTOMDRAGLAW is "//&
                  "defined but LINEAR_DRAG is not.", &
                  units="m", scale=US%m_to_Z, fail_if_missing=.true.) ! Rescaled later
+  call get_param(param_file, mdl, "HBBL_WAVE", CS%dz_bbl_wave, &
+       "The thickness of a bottom boundary layer in which a body force is applied for "//&
+       "the linear wave drag.", &
+       units="m", scale=US%m_to_Z, default=CS%dz_bbl, do_not_log=.not.CS%wavedraglaw)
+  if (CS%wavedraglaw) then
+    call get_param(param_file, mdl, "CDRAG_WAVE_FILE", cdrag_file, &
+         "The name of the file with the spatially-varying wave drag coefficient.", &
+         default="")
+    call get_param(param_file, mdl, "CDRAG_WAVE_VAR", cdrag_var, &
+         "The name of the variable in CDRAG_WAVE_FILE containing cdrag at h points.", &
+         default="cdrag_wave")
+    CS%cdrag_wave(:,:) = 0.0
+    cdrag_file = trim(CS%inputdir)//trim(cdrag_file)
+    call log_param(param_file, mdl, "INPUTDIR/CDRAG_WAVE_FILE", cdrag_file)
+    call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag_wave, G%Domain)
+    call pass_var(CS%cdrag_wave, G%domain)
+  endif
   if (CS%bottomdraglaw) then
     call get_param(param_file, mdl, "VARIABLE_CDRAG", variable_cdrag, &
          "Whether or not to use a spatially-varying drag coefficient.", &
@@ -2483,6 +2560,7 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
                  default=.false., do_not_log=.true.)
 
   CS%Hbbl = CS%dz_bbl * (US%Z_to_m * GV%m_to_H)  ! Rescaled for use in expressions in thickness units.
+  CS%Hbbl_wave = CS%dz_bbl_wave * (US%Z_to_m * GV%m_to_H)
 
   if (CS%RiNo_mix .and. kappa_shear_at_vertex(param_file)) then
     ! This is necessary for reproducibility across restarts in non-symmetric mode.
@@ -2523,7 +2601,7 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
       call pass_var(CS%tideamp,G%domain)
     endif
   endif
-  if (CS%Channel_drag .or. CS%body_force_drag) then
+  if (CS%Channel_drag .or. CS%body_force_drag .or. CS%wavedraglaw) then
     allocate(visc%Ray_u(IsdB:IedB,jsd:jed,nz), source=0.0)
     allocate(visc%Ray_v(isd:ied,JsdB:JedB,nz), source=0.0)
     CS%id_Ray_u = register_diag_field('ocean_model', 'Rayleigh_u', diag%axesCuL, &
