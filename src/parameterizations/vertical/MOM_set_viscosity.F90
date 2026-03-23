@@ -20,7 +20,7 @@ use MOM_forcing_type,  only : forcing, mech_forcing, find_ustar
 use MOM_grid,          only : ocean_grid_type
 use MOM_hor_index,     only : hor_index_type
 use MOM_interface_heights, only : thickness_to_dz
-use MOM_io,            only : slasher, MOM_read_data
+use MOM_io,            only : slasher, MOM_read_data, EAST_FACE, NORTH_FACE
 use MOM_kappa_shear,   only : kappa_shear_is_used, kappa_shear_at_vertex
 use MOM_open_boundary, only : ocean_OBC_type, OBC_segment_type, OBC_NONE, OBC_DIRECTION_E
 use MOM_open_boundary, only : OBC_DIRECTION_W, OBC_DIRECTION_N, OBC_DIRECTION_S
@@ -54,7 +54,7 @@ type, public :: set_visc_CS ; private
   real :: dz_bbl_wave
   real ALLOCABLE_, dimension(NIMEM_,NJMEM_)    :: cdrag          !< The quadratic drag coefficient [nondim].
                             !! Runtime parameter `CDRAG`.
-  real ALLOCABLE_, dimension(NIMEM_,NJMEM_)  :: cdrag_wave !< The linear wave drag coefficient [nondim].
+  real ALLOCABLE_, dimension(NIMEM_,NJMEM_)  :: cdrag_wave_u, cdrag_wave_v !< The linear wave drag coefficient [nondim].
   real    :: c_Smag         !< The Laplacian Smagorinsky coefficient for
                             !! calculating the drag in channels [nondim].
   real    :: drag_bg_vel    !< An assumed unresolved background velocity for
@@ -707,12 +707,6 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
           end if
         end do
 
-        if (m == 1) then
-          cdrag_interp_wave = 0.5 * (CS%cdrag_wave(i,j) + CS%cdrag_wave(i+1,j))
-        else
-          cdrag_interp_wave = 0.5 * (CS%cdrag_wave(i,j) + CS%cdrag_wave(i,j+1))
-        end if
-
         I_hwtot = 0.0 ; if (hwtot > 0.0) I_hwtot = 1.0 / hwtot
         umag_lin(i) = hutot * I_hwtot
         h_bbl_wave(i) = hwtot
@@ -1205,10 +1199,11 @@ subroutine set_viscous_BBL(u, v, h, tv, visc, G, GV, US, CS, pbv)
         I_hwtot = 1.0 / h_bbl_wave(i)
         do k=nz,1,-1
           h_bbl_fr = min(h_bbl_wave(i) - h_sum, h_at_vel(i,k)) * I_hwtot
-          cdrag_conv = cdrag_interp_wave * US%L_to_m * GV%m_to_H
           if (m == 1) then
+            cdrag_conv = CS%cdrag_wave_u(I,j) * US%L_to_m * GV%m_to_H
             visc%Ray_u(I,j,k) = visc%Ray_u(I,j,k) + (cdrag_conv * umag_lin(I)) * h_bbl_fr
           else
+            cdrag_conv = CS%cdrag_wave_v(i,J) * US%L_to_m * GV%m_to_H
             visc%Ray_v(i,J,k) = visc%Ray_v(i,J,k) + (cdrag_conv * umag_lin(i)) * h_bbl_fr
           end if
           h_sum = h_sum + h_at_vel(i,k)
@@ -2310,7 +2305,8 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
   IsdB = G%IsdB ; IedB = G%IedB ; JsdB = G%JsdB ; JedB = G%JedB
 
   ALLOC_(CS%cdrag(isd:ied, jsd:jed))
-  ALLOC_(CS%cdrag_wave(isd:ied, jsd:jed))
+  ALLOC_(CS%cdrag_wave_u(G%IsdB:G%IedB, jsd:jed))
+  ALLOC_(CS%cdrag_wave_v(isd:ied, G%JsdB:G%JedB))
 
   CS%diag => diag
 
@@ -2426,14 +2422,24 @@ subroutine set_visc_init(Time, G, GV, US, param_file, diag, visc, CS, restart_CS
     call get_param(param_file, mdl, "CDRAG_WAVE_FILE", cdrag_file, &
          "The name of the file with the spatially-varying wave drag coefficient.", &
          default="")
-    call get_param(param_file, mdl, "CDRAG_WAVE_VAR", cdrag_var, &
-         "The name of the variable in CDRAG_WAVE_FILE containing cdrag at h points.", &
-         default="cdrag_wave")
-    CS%cdrag_wave(:,:) = 0.0
     cdrag_file = trim(CS%inputdir)//trim(cdrag_file)
     call log_param(param_file, mdl, "INPUTDIR/CDRAG_WAVE_FILE", cdrag_file)
-    call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag_wave, G%Domain)
-    call pass_var(CS%cdrag_wave, G%domain)
+
+    call get_param(param_file, mdl, "CDRAG_WAVE_U_VAR", cdrag_var, &
+         "The name of the variable in CDRAG_WAVE_FILE containing cdrag at u points.", &
+         default="cdrag_wave_u")
+    CS%cdrag_wave_u(:,:) = 0.0
+    call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag_wave_u, G%Domain, &
+         position=EAST_FACE)
+    call pass_var(CS%cdrag_wave_u, G%domain, position=EAST_FACE)
+
+    call get_param(param_file, mdl, "CDRAG_WAVE_V_VAR", cdrag_var, &
+         "The name of the variable in CDRAG_WAVE_FILE containing cdrag at v points.", &
+         default="cdrag_wave_v")
+    CS%cdrag_wave_v(:,:) = 0.0
+    call MOM_read_data(cdrag_file, cdrag_var, CS%cdrag_wave_v, G%Domain, &
+         position=NORTH_FACE)
+    call pass_var(CS%cdrag_wave_v, G%domain, position=NORTH_FACE)
   endif
   if (CS%bottomdraglaw) then
     call get_param(param_file, mdl, "VARIABLE_CDRAG", variable_cdrag, &
