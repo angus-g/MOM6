@@ -377,6 +377,10 @@ type, public :: MOM_control_struct ; private
                                 !! feedback to the coupler/driver [H ~> m or kg m-2] when
                                 !! bulk mixed layer is not used, or a negative value
                                 !! if a bulk mixed layer is being used.
+  real :: Hmix_shelf            !< Diagnostic surface boundary layer thickness over which
+                                !! to average tracer properties under ice shelves [H ~> m or kg m-2].
+  real :: Hmix_UV_shelf         !< Depth scale over which to average sub-ice shelf surface
+                                !! flow [H ~> m or kg m-2].
   logical :: check_bad_sfc_vals !< If true, scan surface state for ridiculous values.
   real    :: bad_val_ssh_max    !< Maximum SSH before triggering bad value message [Z ~> m]
   real    :: bad_val_sst_max    !< Maximum SST before triggering bad value message [C ~> degC]
@@ -2293,6 +2297,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   type(group_pass_type) :: tmp_pass_uv_T_S_h, pass_uv_T_S_h
 
   real    :: Hmix_z, Hmix_UV_z ! Temporary variables with averaging depths [Z ~> m]
+  real    :: Hmix_shelf_z, Hmix_UV_shelf_z
   real    :: HFrz_z            ! Temporary variable with the melt potential depth [Z ~> m]
   real    :: default_val       ! The default value for DTBT_RESET_PERIOD [s]
   logical :: write_geom_files  ! If true, write out the grid geometry files.
@@ -2597,6 +2602,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
 
   if (bulkmixedlayer) then
     CS%Hmix = -1.0 ; CS%Hmix_UV = -1.0
+    CS%Hmix_shelf = -1.0 ; CS%Hmix_UV_shelf = -1.0
   else
     call get_param(param_file, "MOM", "HMIX_SFC_PROP", Hmix_z, &
                  "If BULKMIXEDLAYER is false, HMIX_SFC_PROP is the depth "//&
@@ -2606,6 +2612,17 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     call get_param(param_file, "MOM", "HMIX_UV_SFC_PROP", Hmix_UV_z, &
                  "If BULKMIXEDLAYER is false, HMIX_UV_SFC_PROP is the depth "//&
                  "over which to average to find surface flow properties, "//&
+                 "SSU, SSV. A non-positive value indicates no averaging.", &
+                 units="m", default=0.0, scale=US%m_to_Z)
+
+    call get_param(param_file, "MOM", "HMIX_SHELF_PROP", Hmix_shelf_z, &
+                 "HMIX_SHELF_PROP is the depth over which to average "//&
+                 "to find surface properties like "//&
+                 "SST and SSS or density (but not surface velocities).", &
+                 units="m", default=1.0, scale=US%m_to_Z)
+    call get_param(param_file, "MOM", "HMIX_UV_SHELF_PROP", Hmix_UV_shelf_z, &
+                 "HMIX_UV_SHELF_PROP is the depth over which to average "//&
+                 "to find surface flow properties, "//&
                  "SSU, SSV. A non-positive value indicates no averaging.", &
                  units="m", default=0.0, scale=US%m_to_Z)
   endif
@@ -2903,6 +2920,8 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   if (.not.bulkmixedlayer) then
     CS%Hmix = (US%Z_to_m * GV%m_to_H) * Hmix_z
     CS%Hmix_UV = (US%Z_to_m * GV%m_to_H) * Hmix_UV_z
+    CS%Hmix_shelf = (US%Z_to_m * GV%m_to_H) * Hmix_shelf_z
+    CS%Hmix_UV_shelf = (US%Z_to_m * GV%m_to_H) * Hmix_UV_shelf_z
   endif
   CS%HFrz = (US%Z_to_m * GV%m_to_H) * HFrz_z
 
