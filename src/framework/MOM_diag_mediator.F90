@@ -44,7 +44,8 @@ implicit none ; private
 #define IMPLIES(A, B) ((.not. (A)) .or. (B))
 #define MAX_DSAMP_LEV 2
 
-public set_axes_info, post_data, register_diag_field, time_type
+public set_axes_info, post_data, post_data_3d_low, register_diag_field, time_type
+public diag_type
 public post_product_u, post_product_sum_u, post_product_v, post_product_sum_v
 public set_masks_for_axes
 ! post_data_1d_k is a deprecated interface that can be replaced by a call to post_data, but
@@ -178,7 +179,7 @@ integer :: MSK=-1   !< Use the downsample method of a mask
 !! into this array. The secondaries are 'variations' on the primary diagnostic.
 !! For example the CMOR diagnostics are secondary. The secondary diagnostics
 !! are kept in a list with the primary diagnostic as the head.
-type, private :: diag_type
+type, public :: diag_type
   logical :: in_use !< True if this entry is being used.
   integer :: fms_diag_id !< Underlying FMS diag_manager id.
   integer :: fms_xyave_diag_id = -1 !< For a horizontally area-averaged diagnostic.

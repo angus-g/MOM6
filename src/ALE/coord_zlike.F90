@@ -23,7 +23,7 @@ type, public :: zlike_CS ; private
   real, allocatable, dimension(:) :: coordinateResolution
 end type zlike_CS
 
-public init_coord_zlike, set_zlike_params, build_zstar_column, end_coord_zlike
+public init_coord_zlike, set_zlike_params, build_zstar_column, build_z_column, end_coord_zlike
 
 contains
 
@@ -144,5 +144,33 @@ subroutine build_zstar_column(CS, depth, total_thickness, zInterface, &
   endif
 
 end subroutine build_zstar_column
+
+!> Builds a fixed geopotential-z coordinate upward from the seafloor.
+subroutine build_z_column(CS, depth, total_thickness, zInterface, zScale)
+  type(zlike_CS),           intent(in)    :: CS !< Coordinate control structure
+  real,                     intent(in)    :: depth !< Depth of ocean bottom, positive downward [Z ~> m]
+  real,                     intent(in)    :: total_thickness !< Total column thickness [Z ~> m]
+  real, dimension(CS%nk+1), intent(inout) :: zInterface !< Absolute interface heights [Z ~> m]
+  real, optional,           intent(in)    :: zScale !< Scaling from Z to output units [nondim]
+
+  real :: z_scale, min_thickness, z_top !< Heights and thicknesses [Z ~> m]
+  integer :: k
+
+  z_scale = 1.0 ; if (present(zScale)) z_scale = zScale
+  min_thickness = min(CS%min_thickness, total_thickness / real(CS%nk))
+
+  zInterface(CS%nk+1) = -depth
+  do k=CS%nk,1,-1
+    zInterface(k) = zInterface(k+1) + CS%coordinateResolution(k) * z_scale
+  enddo
+
+  z_top = total_thickness - depth
+  zInterface(1) = z_top
+  do k=1,CS%nk
+    zInterface(k+1) = min(zInterface(k+1), zInterface(k) - min_thickness)
+  enddo
+  zInterface(CS%nk+1) = -depth
+
+end subroutine build_z_column
 
 end module coord_zlike

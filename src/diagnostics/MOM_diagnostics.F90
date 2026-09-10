@@ -9,7 +9,8 @@ module MOM_diagnostics
 
 use MOM_coupler_types,     only : coupler_type_send_data
 use MOM_density_integrals, only : int_density_dz
-use MOM_diag_mediator,     only : post_data, get_diag_time_end
+use MOM_diag_mediator,     only : post_data, post_data_3d_low, get_diag_time_end
+use MOM_diag_mediator,     only : diag_type
 use MOM_diag_mediator,     only : post_product_u, post_product_sum_u
 use MOM_diag_mediator,     only : post_product_v, post_product_sum_v
 use MOM_diag_mediator,     only : register_diag_field, register_scalar_field
@@ -33,6 +34,8 @@ use MOM_unit_scaling,      only : unit_scale_type
 use MOM_variables,         only : thermo_var_ptrs, ocean_internal_state, p3d
 use MOM_variables,         only : accel_diag_ptrs, cont_diag_ptrs, surface
 use MOM_verticalGrid,      only : verticalGrid_type, get_thickness_units, get_flux_units
+use MOM_diag_remap,        only : diag_remap_do_remap
+use regrid_consts,         only : coordinateMode
 use MOM_wave_speed,        only : wave_speed, wave_speed_CS, wave_speed_init
 
 implicit none ; private
@@ -48,6 +51,11 @@ public MOM_diagnostics_init, MOM_diagnostics_end
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
 ! their mks counterparts with notation like "a velocity [Z T-1 ~> m s-1]".  If the units
 ! vary with the Boussinesq approximation, the Boussinesq variant is given first.
+
+type :: w_diag_coord
+  integer :: coord = 0 !< Diagnostic-coordinate index
+  real, allocatable :: previous_h(:,:,:) !< Previous fixed-z layer thicknesses [H ~> m]
+end type w_diag_coord
 
 !> The control structure for the MOM_diagnostics module
 type, public :: diagnostics_CS ; private
@@ -71,7 +79,7 @@ type, public :: diagnostics_CS ; private
   logical :: KE_term_on !< If true, at least one diagnostic term in the KE budget is in use.
 
   !>@{ Diagnostic IDs
-  integer :: id_u   = -1,   id_v   = -1, id_h = -1
+  integer :: id_u   = -1,   id_v   = -1, id_h = -1, id_w = -1
   integer :: id_usq = -1,   id_vsq = -1, id_uv = -1
   integer :: id_e              = -1, id_e_D            = -1
   integer :: id_du_dt          = -1, id_dv_dt          = -1
@@ -117,6 +125,8 @@ type, public :: diagnostics_CS ; private
   integer :: id_tosq           = -1, id_sosq           = -1
 
   !>@}
+  type(w_diag_coord), allocatable :: w_coords(:) !< State for fixed-z continuity diagnostics
+
   type(wave_speed_CS) :: wave_speed  !< Wave speed control struct
 
   type(p3d) :: var_ptr(MAX_FIELDS_)  !< pointers to variables used in the calculation
@@ -247,6 +257,7 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
          "calculate_diagnostic_fields: Module must be initialized before used.")
 
   call calculate_derivs(dt, G, CS)
+  if (CS%id_w > 0) call calculate_w_diagnostic(h, uh, vh, dt, G, GV, US, CS)
 
   if (dt > 0.0) then
     call diag_save_grids(CS%diag)
@@ -801,6 +812,46 @@ subroutine calculate_diagnostic_fields(u, v, h, uh, vh, tv, ADp, CDp, p_surf, &
   endif
 
 end subroutine calculate_diagnostic_fields
+
+subroutine calculate_w_diagnostic(h, uh, vh, dt, G, GV, US, CS)
+  real, intent(in) :: h(:,:,:), uh(:,:,:), vh(:,:,:)
+  real, intent(in) :: dt
+  type(ocean_grid_type), intent(in) :: G
+  type(verticalGrid_type), intent(in) :: GV
+  type(unit_scale_type), intent(in) :: US
+  type(diagnostics_CS), intent(inout) :: CS
+  real :: uhr(SZIB_(G),SZJ_(G),SZK_(GV)) !< Remapped zonal transport [H L2 T-1]
+  real :: vhr(SZI_(G),SZJB_(G),SZK_(GV)) !< Remapped meridional transport [H L2 T-1]
+  real :: w(SZI_(G),SZJ_(G),SZK_(GV)+1) !< Diagnosed vertical velocity [H T-1]
+  type(diag_type), pointer :: diag
+  integer :: m, c, i, j, k, nz
+
+  if (dt <= 0.) return
+  do m=1,size(CS%w_coords)
+    c = CS%w_coords(m)%coord ; nz = CS%diag%diag_remap_cs(c)%nz
+    if (nz > GV%ke) call MOM_error(FATAL, &
+        "calculate_w_diagnostic: Z diagnostic grid has more levels than the native grid.")
+    w(:,:,:) = 0.
+    call diag_remap_do_remap(CS%diag%diag_remap_cs(c), G, GV, US, h, .true., .false., &
+                             CS%diag%remap_axesCuL(c)%mask3d, uh, uhr(:,:,1:nz))
+    call diag_remap_do_remap(CS%diag%diag_remap_cs(c), G, GV, US, h, .false., .true., &
+                             CS%diag%remap_axesCvL(c)%mask3d, vh, vhr(:,:,1:nz))
+    do k=nz,1,-1 ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
+      w(i,j,k) = w(i,j,k+1) - ((CS%diag%diag_remap_cs(c)%h(i,j,k) - &
+                   CS%w_coords(m)%previous_h(i,j,k)) / dt) - G%IareaT(i,j) * &
+                   ((uhr(i+1,j,k) - uhr(i,j,k)) + (vhr(i,j+1,k) - vhr(i,j,k)))
+    enddo ; enddo ; enddo
+    diag => CS%diag%diags(CS%id_w)
+    do while (associated(diag))
+      if (.not.diag%axes%is_native) then
+        if (diag%axes%vertical_coordinate_number == c) &
+          call post_data_3d_low(diag, w(:,:,1:nz+1), CS%diag, mask=diag%axes%mask3d)
+      endif
+      diag => diag%next
+    enddo
+    CS%w_coords(m)%previous_h(:,:,:) = CS%diag%diag_remap_cs(c)%h(:,:,:)
+  enddo
+end subroutine calculate_w_diagnostic
 
 !> This subroutine finds the location of R_in in an increasing ordered
 !! list, Rlist, returning as k the element such that
@@ -1744,6 +1795,7 @@ subroutine MOM_diagnostics_init(MIS, ADp, CDp, Time, G, GV, US, param_file, diag
   character(len=48) :: thickness_units, flux_units
   logical :: use_temperature, adiabatic
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
+  integer :: i, k
   integer :: remap_answer_date    ! The vintage of the order of arithmetic and expressions to use
                                   ! for remapping.  Values below 20190101 recover the remapping
                                   ! answers from 2018, while higher values use more robust
@@ -1909,6 +1961,10 @@ subroutine MOM_diagnostics_init(MIS, ADp, CDp, Time, G, GV, US, param_file, diag
       'Interface Height Relative to Mean Sea Level', 'm', conversion=US%Z_to_m)
   CS%id_e_D = register_diag_field('ocean_model', 'e_D', diag%axesTi, Time, &
       'Interface Height above the Seafloor', 'm', conversion=US%Z_to_m)
+
+  CS%id_w = register_diag_field('ocean_model', 'w', diag%axesTi, Time, &
+      'Vertical velocity diagnosed from continuity on fixed z levels', 'm s-1', &
+      conversion=US%Z_to_m * US%s_to_T)
 
   CS%id_Rml = register_diag_field('ocean_model', 'Rml', diag%axesTL, Time, &
       'Mixed Layer Coordinate Potential Density', 'kg m-3', conversion=US%R_to_kg_m3)
@@ -2100,6 +2156,23 @@ subroutine MOM_diagnostics_init(MIS, ADp, CDp, Time, G, GV, US, param_file, diag
 
   ! Register time derivatives and allocate memory for diagnostics that need
   ! access from across several modules.
+  if (CS%id_w > 0) then
+    if (.not.GV%Boussinesq) call MOM_error(FATAL, 'MOM_diagnostics_init: w requires Boussinesq.')
+    i = 0
+    do k=1,diag%num_diag_coords
+      if (diag%diag_remap_cs(k)%vertical_coord == coordinateMode('Z')) i = i + 1
+    enddo
+    if (i == 0) call MOM_error(FATAL, 'MOM_diagnostics_init: w requires a Z diagnostic coordinate.')
+    allocate(CS%w_coords(i))
+    i = 0
+    do k=1,diag%num_diag_coords
+      if (diag%diag_remap_cs(k)%vertical_coord == coordinateMode('Z')) then
+        i = i + 1 ; CS%w_coords(i)%coord = k
+        allocate(CS%w_coords(i)%previous_h, source=diag%diag_remap_cs(k)%h)
+      endif
+    enddo
+  endif
+
   call set_dependent_diagnostics(MIS, ADp, CDp, G, GV, CS)
 
 end subroutine MOM_diagnostics_init

@@ -23,7 +23,7 @@ use MOM_string_functions, only : uppercase, extractWord, extract_integer, extrac
 use MOM_remapping, only : remapping_CS
 use regrid_consts, only : state_dependent, coordinateUnits
 use regrid_consts, only : coordinateMode, DEFAULT_COORDINATE_MODE
-use regrid_consts, only : REGRIDDING_LAYER, REGRIDDING_ZSTAR
+use regrid_consts, only : REGRIDDING_LAYER, REGRIDDING_ZSTAR, REGRIDDING_Z
 use regrid_consts, only : REGRIDDING_RHO, REGRIDDING_SIGMA
 use regrid_consts, only : REGRIDDING_ARBITRARY, REGRIDDING_SIGMA_SHELF_ZSTAR
 use regrid_consts, only : REGRIDDING_HYCOM1, REGRIDDING_HYBGEN, REGRIDDING_ADAPTIVE
@@ -31,7 +31,7 @@ use regrid_interp, only : interp_CS_type
 use regrid_interp, only : set_interp_scheme, set_interp_extrap, set_interp_answer_date
 
 use coord_zlike,  only : zlike_CS
-use coord_zlike,  only : init_coord_zlike, set_zlike_params, build_zstar_column, end_coord_zlike
+use coord_zlike,  only : init_coord_zlike, set_zlike_params, build_zstar_column, build_z_column, end_coord_zlike
 use coord_sigma,  only : sigma_CS
 use coord_sigma,  only : init_coord_sigma, set_sigma_params, build_sigma_column, end_coord_sigma
 use coord_rho,    only : init_coord_rho, rho_CS, set_rho_params, build_rho_column, end_coord_rho
@@ -804,6 +804,7 @@ subroutine initialize_regridding(CS, G, GV, US, max_depth, param_file, mdl, &
   if (main_parameters) then
     ! This is a work around to apparently needed to work with the from_Z initialization...  ???
     if (coordinateMode(coord_mode) == REGRIDDING_ZSTAR .or. &
+        coordinateMode(coord_mode) == REGRIDDING_Z .or. &
         coordinateMode(coord_mode) == REGRIDDING_HYCOM1 .or. &
         coordinateMode(coord_mode) == REGRIDDING_HYBGEN .or. &
         coordinateMode(coord_mode) == REGRIDDING_ADAPTIVE) then
@@ -2334,7 +2335,7 @@ function uniformResolution(nk,coordMode,maxDepth,rhoLight,rhoHeavy)
   scheme = coordinateMode(coordMode)
   select case ( scheme )
 
-    case ( REGRIDDING_ZSTAR, REGRIDDING_HYCOM1, REGRIDDING_HYBGEN, &
+    case ( REGRIDDING_ZSTAR, REGRIDDING_Z, REGRIDDING_HYCOM1, REGRIDDING_HYBGEN, &
            REGRIDDING_SIGMA_SHELF_ZSTAR, REGRIDDING_ADAPTIVE )
       uniformResolution(:) = maxDepth / real(nk)
 
@@ -2365,7 +2366,7 @@ subroutine initCoord(CS, G, GV, US, coord_mode, param_file)
   type(param_file_type),   intent(in)    :: param_file !< Parameter file
 
   select case (coordinateMode(coord_mode))
-  case (REGRIDDING_ZSTAR)
+  case (REGRIDDING_ZSTAR, REGRIDDING_Z)
     call init_coord_zlike(CS%zlike_CS, CS%nk, CS%coordinateResolution)
   case (REGRIDDING_SIGMA_SHELF_ZSTAR)
     call init_coord_zlike(CS%zlike_CS, CS%nk, CS%coordinateResolution)
@@ -2706,7 +2707,7 @@ function getCoordinateUnits( CS )
   character(len=20)               :: getCoordinateUnits
 
   select case ( CS%regridding_scheme )
-    case ( REGRIDDING_ZSTAR, REGRIDDING_HYCOM1, REGRIDDING_HYBGEN, &
+    case ( REGRIDDING_ZSTAR, REGRIDDING_Z, REGRIDDING_HYCOM1, REGRIDDING_HYBGEN, &
            REGRIDDING_ADAPTIVE )
       getCoordinateUnits = 'meter'
     case ( REGRIDDING_SIGMA_SHELF_ZSTAR )
@@ -2735,6 +2736,8 @@ function getCoordinateShortName( CS )
       !getCoordinateShortName = 'z*'
       ! The following line is a temporary work around...  :(  -AJA
       getCoordinateShortName = 'pseudo-depth, -z*'
+    case ( REGRIDDING_Z )
+      getCoordinateShortName = 'depth, -z'
     case ( REGRIDDING_SIGMA_SHELF_ZSTAR )
       getCoordinateShortName = 'pseudo-depth, -z*/sigma'
     case ( REGRIDDING_SIGMA )
@@ -2825,7 +2828,7 @@ subroutine set_regrid_params( CS, boundary_extrapolation, min_thickness, old_gri
   if (present(remap_answer_date)) CS%remap_answer_date = remap_answer_date
 
   select case (CS%regridding_scheme)
-  case (REGRIDDING_ZSTAR)
+  case (REGRIDDING_ZSTAR, REGRIDDING_Z)
     if (present(min_thickness)) call set_zlike_params(CS%zlike_CS, min_thickness=min_thickness)
   case (REGRIDDING_SIGMA_SHELF_ZSTAR)
     if (present(min_thickness)) call set_zlike_params(CS%zlike_CS, min_thickness=min_thickness)
@@ -2902,7 +2905,7 @@ function getStaticThickness( CS, SSH, depth )
   real :: z, dz  ! Vertical positions and grid spacing [Z ~> m]
 
   select case ( CS%regridding_scheme )
-    case ( REGRIDDING_ZSTAR, REGRIDDING_SIGMA_SHELF_ZSTAR, REGRIDDING_HYCOM1, &
+    case ( REGRIDDING_ZSTAR, REGRIDDING_Z, REGRIDDING_SIGMA_SHELF_ZSTAR, REGRIDDING_HYCOM1, &
            REGRIDDING_HYBGEN, REGRIDDING_ADAPTIVE )
       if (depth>0.) then
         z = ssh
