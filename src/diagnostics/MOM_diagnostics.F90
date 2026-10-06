@@ -20,7 +20,7 @@ use MOM_diag_mediator,     only : diag_get_volume_cell_measure_dm_id
 use MOM_diag_mediator,     only : diag_grid_storage
 use MOM_diag_mediator,     only : diag_save_grids, diag_restore_grids, diag_copy_storage_to_diag
 use MOM_domains,           only : create_group_pass, do_group_pass, group_pass_type
-use MOM_domains,           only : To_North, To_East
+use MOM_domains,           only : To_North, To_East, pass_vector
 use MOM_EOS,               only : calculate_density, calculate_density_derivs, EOS_domain
 use MOM_EOS,               only : cons_temp_to_pot_temp, abs_saln_to_prac_saln
 use MOM_error_handler,     only : MOM_error, FATAL, WARNING
@@ -34,7 +34,7 @@ use MOM_unit_scaling,      only : unit_scale_type
 use MOM_variables,         only : thermo_var_ptrs, ocean_internal_state, p3d
 use MOM_variables,         only : accel_diag_ptrs, cont_diag_ptrs, surface
 use MOM_verticalGrid,      only : verticalGrid_type, get_thickness_units, get_flux_units
-use MOM_diag_remap,        only : diag_remap_do_remap
+use MOM_diag_remap,        only : vertically_reintegrate_diag_field
 use regrid_consts,         only : coordinateMode
 use MOM_wave_speed,        only : wave_speed, wave_speed_CS, wave_speed_init
 
@@ -823,6 +823,7 @@ subroutine calculate_w_diagnostic(h, uh, vh, dt, G, GV, US, CS)
   real :: uhr(SZIB_(G),SZJ_(G),SZK_(GV)) !< Remapped zonal transport [H L2 T-1]
   real :: vhr(SZI_(G),SZJB_(G),SZK_(GV)) !< Remapped meridional transport [H L2 T-1]
   real :: w(SZI_(G),SZJ_(G),SZK_(GV)+1) !< Diagnosed vertical velocity [H T-1]
+  real, pointer :: no_mask(:,:,:) !< Internal face transports must include physical-boundary faces.
   type(diag_type), pointer :: diag
   integer :: m, c, i, j, k, nz
 
@@ -832,10 +833,14 @@ subroutine calculate_w_diagnostic(h, uh, vh, dt, G, GV, US, CS)
     if (nz > GV%ke) call MOM_error(FATAL, &
         "calculate_w_diagnostic: Z diagnostic grid has more levels than the native grid.")
     w(:,:,:) = 0.
-    call diag_remap_do_remap(CS%diag%diag_remap_cs(c), G, GV, US, h, .true., .false., &
-                             CS%diag%remap_axesCuL(c)%mask3d, uh, uhr(:,:,1:nz))
-    call diag_remap_do_remap(CS%diag%diag_remap_cs(c), G, GV, US, h, .false., .true., &
-                             CS%diag%remap_axesCvL(c)%mask3d, vh, vhr(:,:,1:nz))
+    nullify(no_mask)
+    call vertically_reintegrate_diag_field(CS%diag%diag_remap_cs(c), G, h, &
+                                           CS%diag%diag_remap_cs(c)%h, .true., .false., &
+                                           no_mask, uh, uhr(:,:,1:nz))
+    call vertically_reintegrate_diag_field(CS%diag%diag_remap_cs(c), G, h, &
+                                           CS%diag%diag_remap_cs(c)%h, .false., .true., &
+                                           no_mask, vh, vhr(:,:,1:nz))
+    call pass_vector(uhr, vhr, G%Domain, halo=1)
     do k=nz,1,-1 ; do j=G%jsc,G%jec ; do i=G%isc,G%iec
       w(i,j,k) = w(i,j,k+1) - ((CS%diag%diag_remap_cs(c)%h(i,j,k) - &
                    CS%w_coords(m)%previous_h(i,j,k)) / dt) - G%IareaT(i,j) * &
